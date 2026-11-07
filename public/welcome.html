@@ -42,19 +42,55 @@
 <div class="welcome-card"><div class="card-mark">✳</div><h2>Welcome to Atlas</h2><p>Sign in with your configured Google account to open your job-search workspace. Gmail access is requested separately when you enable outreach.</p>
 <a class="google-button" id="google-login" href="/api/auth/google/start"><span class="google-letter">G</span><span id="login-label">Sign in with Google</span></a>
 <div class="welcome-status" id="login-status">Checking Google sign-in configuration…</div>
+<div id="setup-checklist" style="display:none;background:#f7f9fc;border:1px solid #e5ebf2;border-radius:12px;padding:17px;margin-top:18px;font-size:12px;line-height:1.75">
+<strong style="font-size:13px;color:#17243a">Setup checklist</strong>
+<div id="setup-steps" style="margin-top:9px"></div>
+<div style="margin-top:10px"><a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener noreferrer">Create Google OAuth client ↗</a> · <a href="https://vercel.com/niteshs-projects-b6403823/analytics-job-agent/settings/environment-variables" target="_blank" rel="noopener noreferrer">Vercel environment variables ↗</a></div>
+<div style="margin-top:7px"><a href="https://vercel.com/dashboard/stores" target="_blank" rel="noopener noreferrer">Set up PostgreSQL ↗</a> · <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI API keys ↗</a></div>
+<div style="margin-top:10px;color:#61718a">Google OAuth redirect URI (copy exactly):</div>
+<code id="redirect-uri" style="display:block;overflow-wrap:anywhere;background:#edf2f6;border-radius:6px;padding:8px;margin-top:4px">https://analytics-job-agent.vercel.app/api/auth/google/callback</code>
+</div>
 <div class="welcome-divider"></div>
 <a class="welcome-demo" href="/preview.html">Explore the interactive demo →</a>
 <div class="welcome-status">The demo uses fictional job data. Live discovery requires configured API keys and a database. Sending is disabled by default.</div>
 </div></main><footer class="welcome-footer">ATLAS · PRIVATE BETA · HUMAN APPROVAL REQUIRED</footer></div>
 <script>
 (async()=>{
- const label=document.getElementById('login-label'),button=document.getElementById('google-login'),status=document.getElementById('login-status');
+ const label=document.getElementById('login-label');
+ const button=document.getElementById('google-login');
+ const status=document.getElementById('login-status');
+ const checklist=document.getElementById('setup-checklist');
+ const steps=document.getElementById('setup-steps');
+ const state=(ok,name)=>'<div style="margin:4px 0;color:'+(ok?'#24805f':'#9b6220')+'">'+(ok?'✓':'○')+' '+name+'</div>';
  try{
-  const response=await fetch('/api/auth/status',{credentials:'same-origin'});if(!response.ok)throw Error('Unable to check sign-in configuration');
+  const response=await fetch('/api/auth/status',{credentials:'same-origin'});
+  if(!response.ok)throw Error('Unable to check sign-in configuration');
   const data=await response.json();
-  if(data.signed_in){label.textContent='Open my workspace';button.href='/app';status.textContent='You are already signed in.';return;}
-  if(!data.google_ready){button.removeAttribute('href');button.style.opacity='.55';button.style.cursor='not-allowed';button.addEventListener('click',e=>e.preventDefault());label.textContent='Google sign-in not configured';status.textContent='Set up Google OAuth and your private database in Vercel to activate sign-in. You can use the demo now.';return;}
-  status.textContent='Google sign-in is available. Only the configured owner account is permitted.';
- }catch(e){status.textContent='Sign-in status could not be checked. The interactive demo is still available.';}
+  if(data.signed_in&&data.database_configured){
+    label.textContent='Open my workspace';button.href='/app';
+    status.textContent='You are signed in. Your workspace is available.';return;
+  }
+  const missing=!data.google_ready||!data.database_configured||!data.chatgpt_search_configured;
+  checklist.style.display=missing?'block':'none';
+  steps.innerHTML=[
+    state(data.app_origin_configured,'HTTPS app origin'),
+    state(data.owner_email_configured,'Owner Gmail account'),
+    state(data.secrets_configured,'Secure session and encryption keys'),
+    state(data.google_oauth_configured,'Google OAuth client ID and secret'),
+    state(data.database_configured,'Persistent PostgreSQL database'),
+    state(data.chatgpt_search_configured,'OpenAI API key for ChatGPT web research'),
+    state(data.search_configured,'Serper API key for indexed job search (optional)')
+  ].join('');
+  if(!data.google_ready){
+    button.removeAttribute('href');button.style.opacity='.55';button.style.cursor='not-allowed';
+    button.addEventListener('click',e=>e.preventDefault());
+    label.textContent='Complete Google OAuth setup';
+    status.textContent='Google sign-in needs a Google Cloud OAuth client. The steps below show what is missing.';
+  }else if(!data.database_configured){
+    status.textContent='Google sign-in is configured, but PostgreSQL is still required to save your jobs and approvals.';
+  }else{
+    status.textContent='Sign in with your configured Google account. Gmail permissions are requested separately.';
+  }
+ }catch(e){status.textContent='Sign-in readiness could not be checked. The interactive demo remains available.';}
 })();
 </script></body></html>
