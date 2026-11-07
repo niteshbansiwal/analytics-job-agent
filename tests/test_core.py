@@ -44,7 +44,7 @@ def test_approval_creates_resume_and_demo_draft_without_real_send():
     assert row['resume_name'].endswith('.pdf')
     resume = client.get(f"/api/outreach/{row['id']}/resume.pdf")
     assert resume.status_code == 200 and resume.content.startswith(b'%PDF')
-    assert client.post('/api/discover').status_code == 409
+    assert client.post('/api/discover').status_code == 404  # Discovery endpoint intentionally removed
     assert client.get('/api/cron/tick').status_code == 401
 
 
