@@ -172,33 +172,96 @@ def answer_telegram_callback(callback_id: str, message: str):
         client.post(f'https://api.telegram.org/bot{token}/answerCallbackQuery',
                     json={'callback_query_id': callback_id, 'text': message})
 
-def rocketreach_lookup(linkedin_url: str) -> dict:
+def _rocketreach_email_result(payload: dict | list, requested_linkedin: str = '') -> dict:
+    """Return only a professional email after a completed, identity-consistent lookup."""
+    from urllib.parse import urlsplit
+    import re
+
+    if isinstance(payload, list):
+        person = payload[0] if payload else {}
+    elif isinstance(payload, dict):
+        person = payload.get('person') or payload.get('profile') or payload
+    else:
+        person = {}
+    if not isinstance(person, dict):
+        return {'status': 'api_error', 'detail': 'Unexpected provider response'}
+
+    person_id = str(person.get('id') or (payload.get('id') if isinstance(payload, dict) else '') or '')
+    state = str(person.get('status') or (payload.get('status') if isinstance(payload, dict) else '') or '').lower()
+
+    def slug(url):
+        if not url:
+            return ''
+        parsed = urlsplit(url if '://' in url else 'https://' + url)
+        host = (parsed.hostname or '').lower()
+        match = re.search(r'^/in/([^/?#]+)', parsed.path, re.I)
+        return match.group(1).lower() if host in ('linkedin.com', 'www.linkedin.com', 'in.linkedin.com') and match else ''
+
+    supplied_slug = slug(requested_linkedin)
+    returned_slug = slug(person.get('linkedin_url') or '')
+    if supplied_slug and returned_slug and supplied_slug != returned_slug:
+        return {'status': 'identity_mismatch', 'provider_id': person_id,
+                'detail': 'RocketReach returned a different LinkedIn profile; no email saved.'}
+    if state != 'complete':
+        return {'status': 'pending' if state in ('progress', 'searching', 'queued', 'pending') else 'api_error',
+                'provider_id': person_id,
+                'detail': 'Lookup still processing' if state in ('progress', 'searching', 'queued', 'pending') else 'Unexpected lookup status'}
+
+    # Personal email addresses must never be used for hiring outreach.
+    candidates = []
+    work = person.get('current_work_email')
+    if work:
+        candidates.append((work, 'rocketreach_work_email'))
+    emails = person.get('emails') or []
+    if isinstance(emails, (str, dict)):
+        emails = [emails]
+    for item in emails:
+        if isinstance(item, str):
+            candidates.append((item, 'rocketreach_unverified'))
+        elif isinstance(item, dict) and str(item.get('type') or '').lower() not in ('personal', 'private'):
+            value = item.get('email') or item.get('address') or ''
+            validity = str(item.get('smtp_valid') or item.get('status') or '').lower()
+            candidates.append((value, 'rocketreach_smtp_valid' if validity == 'valid' else 'rocketreach_unverified'))
+    consumer = {'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com',
+                'live.com', 'aol.com', 'rediffmail.com', 'proton.me', 'protonmail.com'}
+    for email, email_status in candidates:
+        email = str(email).strip().lower()
+        if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email) and email.split('@')[-1] not in consumer:
+            return {'status': 'returned', 'provider_id': person_id,
+                    'email': email, 'email_status': email_status}
+    return {'status': 'not_found', 'provider_id': person_id}
+
+
+def _rocketreach_request(path: str, *, params: dict) -> dict | list:
     key = env('ROCKETREACH_API_KEY')
     if not key:
         return {'status': 'not_connected'}
-    if 'linkedin.com/in/' not in linkedin_url:
+    with httpx.Client(timeout=25) as client:
+        response = client.get('https://api.rocketreach.co/api/v2/' + path,
+                              headers={'Api-Key': key, 'Accept': 'application/json'}, params=params)
+    if response.status_code in (401, 403, 429):
+        return {'status': 'api_error', 'detail': f'RocketReach HTTP {response.status_code}'}
+    if response.status_code == 404:
+        return {'status': 'not_found'}
+    response.raise_for_status()
+    return response.json()
+
+
+def rocketreach_lookup(linkedin_url: str) -> dict:
+    if 'linkedin.com/in/' not in linkedin_url.lower():
         return {'status': 'no_profile'}
-    with httpx.Client(timeout=35) as client:
-        r = client.get('https://api.rocketreach.co/api/v2/person/lookup',
-                       headers={'Api-Key': key, 'Accept': 'application/json'},
-                       params={'linkedin_url': linkedin_url, 'lookup_type': 'standard', 'return_cached_emails': 'true'})
-        if r.status_code in (401, 403, 429):
-            return {'status': 'api_error', 'detail': f'RocketReach returned {r.status_code}'}
-        r.raise_for_status()
-        response = r.json()
-    status = str(response.get('status') or '').lower()
-    if status not in ('complete', 'success'):
-        return {'status': status or 'pending', 'detail': 'Lookup not complete; no email claimed'}
-    profile = response.get('person') or response.get('profile') or response
-    collected = profile.get('emails') or profile.get('email') or []
-    if isinstance(collected, (str, dict)):
-        collected = [collected]
-    for item in collected:
-        if isinstance(item, str):
-            return {'status': 'returned', 'email': item, 'email_status': 'provider_returned_unverified'}
-        if isinstance(item, dict):
-            mail = item.get('email') or item.get('address') or ''
-            if mail:
-                return {'status': 'returned', 'email': mail,
-                        'email_status': str(item.get('status') or 'provider_returned_unverified')}
-    return {'status': 'not_found'}
+    response = _rocketreach_request('person/lookup',
+        params={'linkedin_url': linkedin_url, 'lookup_type': 'standard',
+                'return_cached_emails': 'true'})
+    if isinstance(response, dict) and response.get('status') in ('not_connected', 'api_error', 'not_found'):
+        return response
+    return _rocketreach_email_result(response, linkedin_url)
+
+
+def rocketreach_check_status(person_id: str, linkedin_url: str) -> dict:
+    if not str(person_id).isdigit():
+        return {'status': 'api_error', 'detail': 'Missing provider lookup ID'}
+    response = _rocketreach_request('person/checkStatus', params={'ids': str(person_id)})
+    if isinstance(response, dict) and response.get('status') in ('not_connected', 'api_error', 'not_found'):
+        return response
+    return _rocketreach_email_result(response, linkedin_url)
