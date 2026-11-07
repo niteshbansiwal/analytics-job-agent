@@ -9,6 +9,9 @@ main = importlib.import_module('app.main')
 from app import integrations
 from app.db import Job, Contact, Integration, Outreach, session
 from app.resume import resume_facts, resume_selection, tailored_pdf
+from app import resume_master
+from io import BytesIO
+from reportlab.pdfgen import canvas
 
 
 def test_master_resume_source_and_selectable_pdf():
@@ -36,6 +39,15 @@ def test_master_resume_source_and_selectable_pdf():
 
 def test_reviewed_draft_requires_confirmation_and_verifies_pdf_without_sending(monkeypatch):
     monkeypatch.setattr(main, 'demo_mode', lambda: False)
+    monkeypatch.setattr(resume_master, 'get_master', lambda db: b'%PDF-test-master')
+    def fake_master_render(pdf, selected_bullets=None):
+        resume_master.validate_selection(selected_bullets)
+        output = BytesIO()
+        document = canvas.Canvas(output, pagesize=(612, 792))
+        document.drawString(40, 720, 'Offline PDF review fixture')
+        document.save()
+        return output.getvalue()
+    monkeypatch.setattr(resume_master, 'render_master', fake_master_render)
     main.app.dependency_overrides[main.owner] = lambda: 'offline-owner'
     job_id, contact_id = str(uuid4()), str(uuid4())
     with session() as db:
@@ -75,9 +87,7 @@ def test_reviewed_draft_requires_confirmation_and_verifies_pdf_without_sending(m
     monkeypatch.setattr(integrations, 'gmail_update_draft', fake_update)
     monkeypatch.setattr(integrations, 'gmail_get_draft', fake_get)
     monkeypatch.setattr(integrations, 'gmail_send_existing_draft', fail_send)
-    selection = resume_selection('SQL Tableau', 'Decision Analytics Manager')
-    chosen = {str(p['index']): [b['index'] for b in p['bullets'] if b['selected']]
-              for p in selection['positions']}
+    chosen = {str(i): list(range(count)) for i, count in enumerate([7, 7, 3, 1])}
     payload = {
         'contact_id': contact_id, 'recipient_email': 'recruiter@example.com',
         'subject': 'Decision Analytics Manager', 'body': 'Hello, I would like to discuss the analytics manager opening.',
