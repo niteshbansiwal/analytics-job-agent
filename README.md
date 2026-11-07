@@ -108,3 +108,25 @@ Cloud functions have request-time limits. For production loads, split discovery,
 - Outlook/WhatsApp integrations and automatic applications on external hiring sites are not implemented.
 - Resume tailoring is **conservative re-ranking of truthful bullets**, not deep AI rewriting; visual formatting differs from the uploaded master PDF.
 - Hosted homepage is at `/` and safe browser-only preview is at `/preview.html`; the authenticated workspace is at `/app`. Production use requires Google OAuth, persistent PostgreSQL and real search API credentials.
+
+## Original one-page resume lock (required for live outreach)
+
+In **Atlas → Configuration → Approved master resume**, upload the exact owner-approved
+`Nitesh_Bansiwal_Resume_-_2026-08(1).pdf` once. The file is SHA-256 validated
+and stored privately in the configured PostgreSQL database, not committed to GitHub.
+
+The review workflow preserves the original PDF's page size, headings, section
+order, employer names, job titles, dates, summary, skills, education and embedded
+font appearance. Only original project/achievement entries may be removed. At
+least 15 of 18 project entries **and** at least 80% of original project text must
+remain. Selected projects are never rewritten by Gemini. The output must be
+exactly one page with a full-page coverage check; invalid selections fail closed.
+Any newly added achievement must first be approved by the owner and included
+in a new approved source PDF (this release does not invent or auto-add projects).
+
+Live legacy one-click approval/draft preparation is disabled. Only the explicit
+**Review email + resume with Gemini → Preview selected resume PDF → Confirm →
+Create verified Gmail draft** workflow may create a Gmail draft. Drafts are
+not sent or scheduled automatically. Existing older drafts should be replaced
+via review before use. Run optional private-fixture PDF tests with
+`MASTER_RESUME_PDF=/path/to/approved.pdf pytest tests/test_resume_master.py`.
