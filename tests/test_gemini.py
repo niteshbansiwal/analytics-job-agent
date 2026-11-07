@@ -49,6 +49,52 @@ def test_gemini_invalid_response_falls_back_without_inventing_facts(monkeypatch)
     assert result['warning']
 
 
+
+def test_primary_timeout_uses_one_faster_model_and_no_rule_based_fallback(monkeypatch):
+    calls = []
+    def fake(prompt, *, model=None, **kwargs):
+        calls.append(model or 'primary')
+        if model is None:
+            raise gemini.GeminiError('Gemini request timed out after 12 seconds',
+                                     retryable=True)
+        assert model == gemini.FAST_FALLBACK_MODEL
+        return json.dumps({'fact_ids': ['dashboards', 'amex_sme']})
+    monkeypatch.setattr(gemini, 'gemini_text', fake)
+    result = gemini.build_email_preview('Visa', 'Decision Analytics Manager',
+                                        'SQL Tableau dashboards')
+    assert calls == ['primary', gemini.FAST_FALLBACK_MODEL]
+    assert result['mode'] == 'gemini_backup'
+    assert result['model'] == gemini.FAST_FALLBACK_MODEL
+    assert 'faster Gemini model' in result['warning']
+    assert result['email_sent'] is False
+
+
+def test_two_transient_failures_use_clear_facts_only_fallback(monkeypatch):
+    calls = []
+    def fail(prompt, *, model=None, **kwargs):
+        calls.append(model or 'primary')
+        raise gemini.GeminiError('Gemini request timed out after 12 seconds',
+                                 retryable=True)
+    monkeypatch.setattr(gemini, 'gemini_text', fail)
+    result = gemini.build_email_preview('Visa', 'Decision Analytics Manager',
+                                        'SQL Tableau dashboards')
+    assert calls == ['primary', gemini.FAST_FALLBACK_MODEL]
+    assert result['mode'] == 'facts_only_fallback'
+    assert 'Both Gemini attempts failed' in result['warning']
+    assert result['email_sent'] is False
+
+
+def test_quota_error_does_not_repeat_api_call(monkeypatch):
+    calls = []
+    def fail(prompt, **kwargs):
+        calls.append(1)
+        raise gemini.GeminiError('Gemini quota or rate limit exceeded (HTTP 429)')
+    monkeypatch.setattr(gemini, 'gemini_text', fail)
+    result = gemini.build_email_preview('Visa', 'Decision Analytics Manager', 'SQL')
+    assert len(calls) == 1
+    assert result['mode'] == 'facts_only_fallback'
+
+
 def test_gemini_api_quota_error_is_visible_in_fallback(monkeypatch):
     def fail(prompt, **kwargs):
         raise gemini.GeminiError('Gemini quota or rate limit exceeded (HTTP 429)')
