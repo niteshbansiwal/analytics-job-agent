@@ -121,17 +121,27 @@ def health():
 
 @app.get('/api/auth/status')
 def auth_status(request: Request):
-    google_ready = all([env('GOOGLE_CLIENT_ID'), env('GOOGLE_CLIENT_SECRET'),
-                        env('APP_BASE_URL'), env('ALLOWED_GOOGLE_EMAIL')]) and len(env('SESSION_SECRET')) >= 32
-    database_configured = bool(env('DATABASE_URL').startswith(('postgres://', 'postgresql://', 'postgresql+psycopg://')))
+    """Configuration readiness only; does not validate third-party credentials."""
+    app_origin_configured = env('APP_BASE_URL').startswith('https://')
+    owner_email_configured = bool(env('ALLOWED_GOOGLE_EMAIL'))
+    secrets_configured = len(env('SESSION_SECRET')) >= 32 and bool(env('TOKEN_ENCRYPTION_KEY'))
+    google_oauth_configured = bool(env('GOOGLE_CLIENT_ID') and env('GOOGLE_CLIENT_SECRET'))
+    google_ready = bool(app_origin_configured and owner_email_configured
+                        and secrets_configured and google_oauth_configured)
+    database_configured = bool(env('DATABASE_URL').startswith(
+        ('postgres://', 'postgresql://', 'postgresql+psycopg://')))
     return {
         'signed_in': bool(check_session(request.cookies.get('job_agent_session', ''))),
-        'google_ready': bool(google_ready),
+        'app_origin_configured': app_origin_configured,
+        'owner_email_configured': owner_email_configured,
+        'secrets_configured': secrets_configured,
+        'google_oauth_configured': google_oauth_configured,
+        'google_ready': google_ready,
         'database_configured': database_configured,
         'search_configured': bool(env('SERPER_API_KEY')),
         'chatgpt_search_configured': bool(env('OPENAI_API_KEY')),
         'gmail_oauth_configured': bool(google_ready and env('TOKEN_ENCRYPTION_KEY') and database_configured),
-        'send_enabled': False,  # Live sending is safety-locked until independently enabled.
+        'send_enabled': False,
         'demo_available': True,
     }
 
