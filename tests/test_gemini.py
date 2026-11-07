@@ -131,9 +131,45 @@ def test_gemini_api_response_and_no_key_leak(monkeypatch):
             assert 'gemini-3.8-flash:generateContent' in url
             assert headers['x-goog-api-key'] == 'fake-key'
             assert 'fake-key' not in str(json)
+            # Regression: Gemini 3.8 Flash rejects MINIMAL with HTTP 400.
+            assert json['generationConfig']['thinkingConfig']['thinkingLevel'] == 'LOW'
             return Response()
     monkeypatch.setattr(gemini, 'env',
         lambda name, default='': {'GEMINI_API_KEY':'fake-key',
                                  'GEMINI_MODEL':'gemini-3.8-flash'}.get(name,default))
     monkeypatch.setattr(gemini.httpx, 'Client', Client)
     assert gemini.test_gemini_connection()['connected']
+
+
+def test_gemini_38_and_35_both_use_supported_low_thinking(monkeypatch):
+    calls = []
+    class Response:
+        status_code = 200
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {'candidates': [{'content': {'parts': [
+                {'text': '{"fact_ids":["dashboards","amex_sme"]}'}
+            ]}}]}
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def post(self, url, *, headers, json):
+            calls.append((url, json))
+            return Response()
+    monkeypatch.setattr(gemini, 'env',
+        lambda name, default='': {'GEMINI_API_KEY': 'fake-key',
+                                 'GEMINI_MODEL': 'gemini-3.8-flash'}.get(name, default))
+    monkeypatch.setattr(gemini.httpx, 'Client', Client)
+    for model in ('gemini-3.8-flash', 'gemini-3.5-flash'):
+        result = gemini.gemini_text('Select facts', json_output=True, model=model)
+        assert gemini._validated_ids(result) == ['dashboards', 'amex_sme']
+    assert len(calls) == 2
+    for (url, payload), model in zip(calls, ('gemini-3.8-flash', 'gemini-3.5-flash')):
+        assert model + ':generateContent' in url
+        assert payload['generationConfig']['thinkingConfig'] == {'thinkingLevel': 'LOW'}
+        assert payload['generationConfig']['responseMimeType'] == 'application/json'
