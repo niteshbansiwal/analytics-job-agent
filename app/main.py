@@ -251,6 +251,38 @@ def overview(user: str = Depends(owner)):
             },
         }
 
+@app.post('/api/integrations/gemini/test')
+def test_gemini_api(user: str = Depends(owner)):
+    """Owner-triggered live API smoke test. No job or personal data is transmitted."""
+    if demo_mode():
+        raise HTTPException(409, 'Gemini live test is disabled in demo mode.')
+    from .gemini import GeminiError, test_gemini_connection
+    try:
+        return test_gemini_connection()
+    except GeminiError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post('/api/jobs/{job_id}/gemini-preview')
+def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
+    """Fact-locked, review-only preview. Does NOT create a Gmail draft or send email."""
+    if demo_mode():
+        raise HTTPException(409, 'Gemini preview is disabled in demo mode.')
+    from .gemini import build_email_preview
+    with session() as db:
+        job = db.get(Job, job_id)
+        if not job or job.is_demo:
+            raise HTTPException(404, 'Imported job not found.')
+        contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
+        name = next((c.name for c in contacts if c.email), '') or (
+            contacts[0].name if contacts else '')
+        result = build_email_preview(job.company, job.title, job.jd or '', name)
+        log(db, 'gemini_email_preview', job.id,
+            mode=result['mode'], fact_ids=result['selected_fact_ids'],
+            draft_created=False, email_sent=False)
+        return result
+
+
 @app.get('/api/jobs/{job_id}')
 def job_details(job_id: str, user: str = Depends(owner)):
     with session() as db:
