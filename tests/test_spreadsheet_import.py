@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base, Job, Contact
-from app.spreadsheet_import import HEADERS, parse_csv, import_rows, template_xlsx
+from app.spreadsheet_import import HEADERS, parse_csv, parse_file, import_rows, template_xlsx
 
 
 def sample_row(url='https://www.linkedin.com/jobs/view/123456'):
@@ -101,3 +101,70 @@ def test_csv_unicode_and_quoted_commas():
     parsed = parse_csv('company,title,post_url,location\n"Acme, Inc","Senior Manager, Analytics",https://example.com/jobs/1,"Gurugram, India"\n')
     assert parsed[0][1]['company'] == 'Acme, Inc'
     assert parsed[0][1]['title'] == 'Senior Manager, Analytics'
+
+
+# Regression: the ChatGPT task produced this human-friendly layout, which
+# previously failed with 'first row must include company, title, post_url'.
+def test_chatgpt_approved_jobs_sheet_imports_without_manual_reformatting(db):
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Read Me'
+    ws.append(['ATLAS APPROVAL EXPORT'])
+    ws = wb.create_sheet('Approved Jobs')
+    ws.append(['Job ID', 'Company', 'Role', 'Location', 'Match Score',
+               'Approval', 'Job Source URL', 'Posting Date Evidence',
+               'Posting Date Verified', 'Contact Name', 'Contact Role',
+               'LinkedIn URL', 'Contact Association', 'Fit / Notes',
+               'Application Status'])
+    ws.append(['J2', 'Indus Insights', 'Manager / Senior Manager Analytics',
+               'Gurugram', '9.5/10', 'Approved',
+               'https://in.linkedin.com/jobs/view/4386654436',
+               'LinkedIn displayed 2 weeks ago', 'No', 'Anjali Yadav',
+               'Associate Manager, Talent Acquisition',
+               'https://in.linkedin.com/in/anjali-yadav-97572017a',
+               'Identified as job poster', 'BFSI analytics and SQL', 'Not applied'])
+    ws.append(['J1', 'Not Approved Co', 'Analytics Manager', 'Delhi',
+               '8/10', 'Rejected', 'https://example.com/jobs/not-approved',
+               '', '', '', '', '', '', '', 'Not applied'])
+    out = io.BytesIO()
+    wb.save(out)
+    parsed = parse_file(out.getvalue(), 'Atlas_Approved_Jobs.xlsx')
+    assert len(parsed) == 1
+    assert parsed[0][1]['company'] == 'Indus Insights'
+    assert parsed[0][1]['title'] == 'Manager / Senior Manager Analytics'
+    assert parsed[0][1]['contact_1_name'] == 'Anjali Yadav'
+    assert parsed[0][1]['contact_1_linkedin'].startswith('https://')
+    assert parsed[0][1]['post_age'] == 'LinkedIn displayed 2 weeks ago'
+    result = import_rows(db, parsed)
+    assert result['created'] == 1
+    assert result['contacts_created'] == 1
+    assert result['skipped'] == 0
+    assert db.execute(select(Job)).scalar_one().company == 'Indus Insights'
+
+
+def test_jobs_sheet_with_preamble_and_aliases():
+    parsed = parse_csv('ATLAS approved jobs\\nPrepared,2026-11-08\\n\\nCompany,Role,Job Source URL,Approval\\nAcme,Analytics Manager,https://example.com/jobs/1,Approved\\n')
+    assert len(parsed) == 1
+    assert parsed[0][0] == 5
+    assert parsed[0][1]['post_url'] == 'https://example.com/jobs/1'
+
+
+def test_rejected_rows_cannot_be_imported():
+    with pytest.raises(ValueError, match='no job rows'):
+        parse_csv('Company,Role,Job Source URL,Approval\\nAcme,Analytics Manager,https://example.com/jobs/1,Rejected\\n')
+
+
+def test_exact_atlas_xlsx_contract_is_accepted():
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Jobs'
+    ws.append(HEADERS)
+    values = sample_row()
+    ws.append([values.get(h, '') for h in HEADERS])
+    out = io.BytesIO()
+    wb.save(out)
+    parsed = parse_file(out.getvalue(), 'atlas_jobs.xlsx')
+    assert len(parsed) == 1
+    assert parsed[0][1]['company'] == 'Example Payments'
