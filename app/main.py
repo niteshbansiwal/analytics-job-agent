@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -350,7 +351,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
         if not contact or contact.job_id != job.id or not contact.email:
             raise HTTPException(422, 'Select a contact with a professional email for this job.')
         if (contact.email.strip().lower() != data.recipient_email.strip().lower()
-                or '@' not in contact.email or '\n' in contact.email or '\r' in contact.email):
+                or not re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', contact.email)):
             raise HTTPException(409, 'Contact email changed. Refresh and review the recipient.')
         row = db.execute(select(Outreach).where(Outreach.job_id == job.id)).scalar_one_or_none()
         if row and row.status in ('sent', 'sending', 'awaiting_reply',
@@ -525,7 +526,7 @@ class ContactInput(BaseModel):
 
 @app.post('/api/jobs/{job_id}/contacts')
 def add_contact(job_id: str, data: ContactInput, user: str = Depends(owner)):
-    if data.email and ('@' not in data.email or '\n' in data.email):
+    if data.email and not re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', data.email):
         raise HTTPException(422, 'Enter a valid professional email address')
     if data.linkedin_url and not data.linkedin_url.startswith('https://www.linkedin.com/in/'):
         raise HTTPException(422, 'LinkedIn profile must use https://www.linkedin.com/in/...')
