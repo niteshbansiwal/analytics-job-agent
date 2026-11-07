@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,8 +36,19 @@ def search_public_index(query: str, count: int = 8) -> list[dict]:
         return r.json().get('organic', [])
 
 def canonical(url: str):
-    parts = urlsplit(url.strip())
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip('/'), '', ''))
+    """Drop tracking but preserve query parameters that IDENTIFY a job.
+
+    Some ATS URLs use a generic path with a unique ?jobId= or ?gh_jid=.
+    Removing those IDs would incorrectly collapse unrelated vacancies.
+    """
+    parts = urlsplit((url or '').strip())
+    identity = {'jobid', 'job_id', 'gh_jid', 'reqid', 'requisitionid',
+                'requisition_id', 'jk', 'jid', 'job'}
+    params = [(k.lower(), v) for k, v in parse_qsl(parts.query, keep_blank_values=False)
+              if k.lower() in identity and v and len(v) <= 150]
+    params.sort()
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(),
+                       parts.path.rstrip('/'), urlencode(params), ''))
 
 def llm_extract(item: dict) -> dict | None:
     """Use only indexed excerpt as evidence; never let model invent absent fields."""
