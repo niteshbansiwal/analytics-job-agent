@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base, Job, Contact
-from app.spreadsheet_import import HEADERS, parse_csv, parse_file, import_rows, template_xlsx
+from app.spreadsheet_import import HEADERS, parse_csv, import_rows, template_xlsx
 
 
 def sample_row(url='https://www.linkedin.com/jobs/view/123456'):
@@ -33,7 +33,6 @@ def db():
 
 def test_template_round_trip():
     raw = template_xlsx()
-    rows = parse_file(raw, 'atlas.xlsx') if False else None
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(raw), read_only=True)
     assert wb.sheetnames == ['Jobs', 'Instructions']
