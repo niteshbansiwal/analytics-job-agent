@@ -420,14 +420,14 @@ def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
         contact.email_status = result.get('email_status', 'rocketreach_unverified')
     # A temporary provider failure should not erase a live lookup.
     temporary_error = status in ('api_error', 'rate_limited') and is_check
-    if temporary_error and previous.get('status') in ('pending', 'awaiting_email'):
+    if temporary_error and previous.get('status') in ('pending', 'awaiting_email', 'pending_manual'):
         status = previous['status']
         check_count = int(previous.get('check_count') or 0)
 
     delays = (12, 40, 120, 180)
     next_check_at = ((timestamp + timedelta(seconds=delays[min(check_count, len(delays) - 1)])).isoformat()
-                     if status in ('pending', 'awaiting_email') and provider_id else '')
-    if temporary_error and status in ('pending', 'awaiting_email'):
+                     if status in ('pending', 'awaiting_email', 'pending_manual') and provider_id else '')
+    if temporary_error and status in ('pending', 'awaiting_email', 'pending_manual'):
         next_check_at = (timestamp + timedelta(seconds=90)).isoformat()
     detail = str(result.get('detail') or '')[:180]
     if status == 'not_found' and provider_id:
