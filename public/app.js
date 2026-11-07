@@ -1,4 +1,6 @@
 const state = { data:null, page:'overview', selected:'', filter:'all', search:'' };
+let rrAutoTimer=null;
+let rrBusy=false;
 const $ = id => document.getElementById(id);
 const escapeHtml = v => String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const safeUrl = v => {try{const u=new URL(v);return ['http:','https:'].includes(u.protocol)?escapeHtml(u.href):''}catch{return ''}};
@@ -19,6 +21,7 @@ const connections=[['Google Gmail','G',d.integrations.gmail],['Spreadsheet impor
 $('sidebar-connections').innerHTML=connections.map(x=>`<div class="side-connection"><span class="service-icon">${x[1]}</span><span>${x[0]}</span><span class="service-status ${x[2]?'connected':''}" title="${x[2]?'Configured':'Not configured'}"></span></div>`).join('');
 $('metrics').innerHTML=metricCards();$('metrics').style.display=['overview','jobs'].includes(state.page)?'grid':'none';
 const view=$('main-view');if(state.page==='overview'||state.page==='jobs'){view.innerHTML=`<div class="content-grid">${jobPanel()}${detailPanel()}</div>`}else if(state.page==='outbox'){view.innerHTML=outboxPanel()}else if(state.page==='activity'){view.innerHTML=activityPanel()}else{view.innerHTML=settingsPanel()}
+ scheduleRocketReachRecheck();
 }
 function metricCards(){const d=state.data;const approved=d.jobs.filter(j=>['approved','reply_received'].includes(j.status)).length;const scheduled=d.outreach.filter(o=>['scheduled','followup_scheduled','demo_draft','awaiting_gmail','pending_contact'].includes(o.status)).length;const replies=d.outreach.filter(o=>o.last_reply_at).length;
 return [
@@ -34,11 +37,14 @@ function jobCard(j){return `<div class="job-card ${j.id===state.selected?'select
 function contactCard(c,index){if(!c)return `<div class="contact-unknown">Contact ${index} — Not identified. No hiring relationship or email is assumed.</div>`;
 const rr=c.rocketreach_status||'not_started';
 const canLookup=state.data?.integrations.rocketreach&&c.linkedin_url&&!c.email;
-const isPending=rr==='pending';
-const action=isPending?'rocketreach-check':'rocketreach';
-const label=isPending?'↻ Check RocketReach lookup status':rr==='not_started'?'⌕ Find work email via RocketReach':'↻ Retry RocketReach lookup';
-const lookupButton=canLookup?`<button class="btn btn-small btn-ghost" style="margin-top:9px" data-action="${action}" data-id="${c.id}" data-retry="${rr!=='not_started'}">${label}</button>`:'';
-const lookupInfo=rr!=='not_started'&&!c.email?`<p class="hint">RocketReach: ${escapeHtml(rr.replaceAll('_',' '))}. Email not confirmed.</p>`:'';
+const recheck=['pending','awaiting_email'].includes(rr);
+const exhausted=Number(c.rocketreach_lookup_count||0)>=2;
+const action=recheck?'rocketreach-check':'rocketreach';
+const label=recheck?'↻ Recheck existing lookup (no new lookup)':rr==='not_started'?'⌕ Find work email via RocketReach':exhausted?'Maximum lookups reached':'↻ Retry paid RocketReach lookup';
+const lookupButton=canLookup?`<button class="btn btn-small btn-ghost" style="margin-top:9px" data-action="${action}" data-id="${c.id}" data-retry="${rr!=='not_started'}" ${exhausted&&!recheck?'disabled':''}>${label}</button>`:'';
+const next=c.rocketreach_next_check_at?new Date(c.rocketreach_next_check_at).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit'}):'';
+const statusText=rr==='awaiting_email'?'No email yet — automatically rechecking the same lookup':rr==='pending'?'RocketReach is enriching this contact':rr==='not_found'?'No professional email after available checks; manual retry may consume another credit':rr.replaceAll('_',' ');
+const lookupInfo=rr!=='not_started'&&!c.email?`<p class="hint">RocketReach: ${escapeHtml(statusText)}${next&&recheck?` · Next check around ${escapeHtml(next)} IST`:''}</p>`:'';
 return `<div class="contact-box"><div class="contact-top"><div class="contact-avatar">${escapeHtml(initials(c.name))}</div><div class="contact-info"><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.category)} · ${escapeHtml(c.relationship)}</small></div>${c.email?'<span class="status scheduled">Email found</span>':''}</div><p>${escapeHtml(c.reason||'Connection to this opening requires verification.')}</p>${c.email?`<p><b>Email:</b> ${escapeHtml(c.email)} <span class="muted">(${escapeHtml(c.email_status)})</span></p>`:''}${c.linkedin_url?`<a class="contact-link" href="${safeUrl(c.linkedin_url)}" target="_blank" rel="noreferrer">View LinkedIn profile ↗</a>`:''}${lookupInfo}${lookupButton}</div>`}
 function detailPanel(){const j=jobOf(state.selected);if(!j)return `<section class="panel"><div class="empty">Choose a job to view hiring contacts and fit.</div></section>`;
 const o=j.outreach;return `<section class="panel"><div class="panel-head"><div><h2>Opportunity details</h2><small>Evidence first · No invented contacts</small></div><span class="status ${sClass(j.status)}">${escapeHtml(j.status.replaceAll('_',' '))}</span></div><div class="detail-body"><div class="detail-hero"><div class="detail-logo">${escapeHtml(initials(j.company))}</div><div class="detail-hero-main"><h3 class="detail-title">${escapeHtml(j.title)}</h3><p class="detail-company">${escapeHtml(j.company)} · ${escapeHtml(j.location)}</p><span class="status ${j.is_demo?'demo_draft':'pending_contact'}">${j.is_demo?'DEMO SAMPLE':escapeHtml(j.verification.replaceAll('_',' '))}</span></div></div><div class="detail-stat-row"><span class="detail-pill">◷ ${escapeHtml(j.post_age)}</span><span class="detail-pill">${escapeHtml(j.experience)}</span><span class="detail-pill">${escapeHtml(j.leadership)}</span></div><div class="section-title">WHY YOU MATCH</div><div class="fit-box"><div class="fit-bubble">✓</div><div><strong>Preliminary fit · ${Number(j.fit_score).toFixed(1)}/10</strong><p>${escapeHtml(j.fit_why)}</p></div></div><div class="section-title">HIRING-SIDE CONTACTS <span class="muted">(${j.contacts.length}/2)</span></div>${contactCard(j.contacts[0],1)}${contactCard(j.contacts[1],2)}<button class="action-inline" data-action="contact" data-id="${j.id}">+ Add a contact or verified professional email</button><div class="section-title">POSTING EVIDENCE</div>${j.post_url?`<a class="source-link" target="_blank" rel="noreferrer" href="${safeUrl(j.post_url)}">↗ Open original source (${escapeHtml(j.source)})</a>`:`<p class="summary-mini">No real source exists for this fictional demonstration vacancy.</p>`}<p class="summary-mini">${escapeHtml(j.jd).slice(0,280)}</p><p class="hint">Posting status: ${escapeHtml(j.verification)}. Date source: ${escapeHtml(j.posting_date_kind)}. Gaps: ${escapeHtml(j.gaps)}</p><div class="detail-actions">${j.status==='discovered'?`<button class="btn btn-green" data-action="approve" data-id="${j.id}">✓ Approve job</button><button class="btn btn-red" data-action="reject" data-id="${j.id}">× Pass</button>`:o?`<button class="btn btn-dark" data-action="outreach" data-id="${o.id}">↗ View outreach</button>`:''}</div><div class="detail-note">Approval creates a tailored resume and an editable draft. Live Gmail sending still requires connected credentials and enabled scheduling.</div></div></section>`}
@@ -104,20 +110,36 @@ async function promptDialog(){
  }catch(err){toast(err.message,true)}
 }
 function contactDialog(id){modal(`<h2>Add hiring-side contact</h2><p>Only add a person whose identity you can support with an original post or professional profile. Email is optional.</p><form id="contact-form" data-jobid="${id}"><label class="form-label">Name *</label><input class="form-input" name="name" required placeholder="Contact's verified name"><label class="form-label">Current role</label><input class="form-input" name="title" placeholder="Talent Acquisition / Director of Analytics"><label class="form-label">LinkedIn profile URL</label><input class="form-input" name="linkedin_url" type="url" placeholder="https://www.linkedin.com/in/..."><label class="form-label">Professional email (optional)</label><input class="form-input" name="email" type="email" placeholder="Only a genuinely sourced address"><label class="form-label">Evidence URL</label><input class="form-input" name="evidence_url" type="url" placeholder="Link to job announcement/profile"><button type="submit" class="btn btn-dark">Save contact</button></form>`)}
-async function rocketreachAction(id,check=false,retry=false){
- const warning=check?'Check the existing RocketReach lookup status? No new person lookup will be started.':
-   retry?'Retry this RocketReach person lookup? This may use ANOTHER paid RocketReach credit.':
-   'Look up this potential hiring contact via RocketReach? A person lookup may consume a RocketReach credit. No email will be sent.';
- if(!confirm(warning))return;
+function scheduleRocketReachRecheck(){
+ if(rrAutoTimer)clearTimeout(rrAutoTimer);
+ if(!state.data||!['overview','jobs'].includes(state.page))return;
+ const job=jobOf(state.selected);
+ const contact=job?.contacts?.find(c=>!c.email&&['pending','awaiting_email'].includes(c.rocketreach_status));
+ if(!contact)return;
+ const due=Date.parse(contact.rocketreach_next_check_at||'')||Date.now()+15000;
+ const delay=Math.min(180000,Math.max(1000,due-Date.now()+1000));
+ rrAutoTimer=setTimeout(()=>{if(!rrBusy&&jobOf(state.selected)?.contacts?.some(c=>c.id===contact.id))rocketreachAction(contact.id,true,false,true)},delay);
+}
+async function rocketreachAction(id,check=false,retry=false,automatic=false){
+ if(rrBusy)return;
+ if(!check){
+  const warning=retry?'Retry RocketReach lookup? This may use ANOTHER paid credit. Atlas first checks the previous lookup and enforces a cooldown.':
+    'Start a RocketReach person lookup? This may use a credit. Atlas will recheck this same lookup automatically; no email will be sent.';
+  if(!confirm(warning))return;
+ }
+ rrBusy=true;
  try{
   const endpoint=`/api/contacts/${id}/rocketreach/${check?'check':'lookup'}`;
   const result=await api(endpoint,{method:'POST',body:JSON.stringify({retry:!!retry})});
   await load();
   if(result.status==='returned')toast('Work email found and saved. Verify the hiring relationship before outreach.');
-  else if(result.status==='pending')toast('RocketReach lookup is processing. Use Check status in a moment.');
-  else if(result.status==='already_found')toast('Email already exists; no RocketReach lookup made.');
-  else toast('RocketReach: '+(result.detail||result.status||'No work email found'),result.status==='api_error');
- }catch(e){toast(e.message,true)}
+  else if(result.status==='already_found'&&!automatic)toast('Email already exists; no new lookup made.');
+  else if(result.status==='not_found'&&!automatic)toast('No work email after rechecks. A paid retry may be available after the cooldown.');
+  else if(result.status==='api_error')toast('RocketReach: '+(result.detail||'API error'),true);
+  else if(!automatic&&!check)toast('Lookup started. Atlas will recheck this same RocketReach request automatically.');
+  else if(!automatic&&check)toast(result.detail||'RocketReach status checked.');
+ }catch(e){if(!automatic)toast(e.message,true)}
+ finally{rrBusy=false;}
 }
 async function mutate(path){try{await api(path,{method:'POST'});await load();toast('Updated successfully.')}catch(e){toast(e.message,true)}}
 document.addEventListener('submit',async e=>{if(['sheet-import-form','csv-import-form'].includes(e.target.id)){e.preventDefault();await handleSheetSubmit(e.target)}});
