@@ -317,14 +317,14 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         job = db.get(Job, job_id)
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found.')
-        contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
-        name = next((c.name for c in contacts if c.email), '') or (
-            contacts[0].name if contacts else '')
-        result = build_email_preview(job.company, job.title, job.jd or '', name)
         from .resume_master import get_master, master_selection
         master = get_master(db)
         if master is None:
             raise HTTPException(409, 'Upload the approved original resume PDF in Configuration before Gemini review.')
+        contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
+        name = next((c.name for c in contacts if c.email), '') or (
+            contacts[0].name if contacts else '')
+        result = build_email_preview(job.company, job.title, job.jd or '', name)
         result['resume'] = master_selection(master, job.jd or '', job.title)
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
@@ -346,10 +346,13 @@ def reviewed_resume_pdf(job_id: str, data: ResumePreviewInput,
         job = db.get(Job, job_id)
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found.')
+        master = get_master(db)
+        if master is None:
+            raise HTTPException(409, 'Upload the approved original resume PDF before generating a resume.')
         try:
             pdf = tailored_pdf(job.jd or '', job.title,
                                selected_bullets=data.selected_bullets,
-                               master_pdf=get_master(db))
+                               master_pdf=master)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         if not pdf.startswith(b'%PDF'):
@@ -408,10 +411,13 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             raise HTTPException(409, 'This job already has sent or active outreach; no duplicate draft created.')
         if row and row.gmail_draft_id and not data.replace_existing_draft:
             raise HTTPException(409, 'Existing Gmail draft: confirm replacement before overwriting its edits.')
+        master = get_master(db)
+        if master is None:
+            raise HTTPException(409, 'Upload the approved original resume PDF before generating a resume.')
         try:
             pdf = tailored_pdf(job.jd or '', job.title,
                                selected_bullets=data.selected_bullets,
-                               master_pdf=get_master(db))
+                               master_pdf=master)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         if not pdf.startswith(b'%PDF'):
@@ -512,7 +518,10 @@ def test_gmail_resume_attachment(job_id: str, user: str = Depends(owner)):
             raise HTTPException(404, 'Imported job not found.')
         # This is only a delivery/attachment test, not the final AI resume.
         from .resume_master import get_master
-        pdf = tailored_pdf(job.jd, job.title, master_pdf=get_master(db))
+        master = get_master(db)
+        if master is None:
+            raise HTTPException(409, 'Upload approved master resume PDF before testing Gmail attachments.')
+        pdf = tailored_pdf(job.jd, job.title, master_pdf=master)
         if not pdf.startswith(b'%PDF'):
             raise HTTPException(500, 'Generated resume is not a valid PDF.')
         safe_company = re.sub(r'[^A-Za-z0-9_-]+', '_', job.company).strip('_')[:36] or 'Job'
