@@ -13,12 +13,15 @@ from .config import env
 # Conservative career facts already established by the owner. Before any live
 # outreach, the owner must review the generated preview and attached resume.
 CAREER_FACTS = {
-    'amex_sme': 'At American Express, I work on analytics for the US small-business portfolio, including account assignment and territory mapping.',
-    'amex_genai': 'I designed a multi-agent GenAI dispute-resolution workflow using retrieval over policy documents and SQL tool calling.',
-    'plivo_margin': 'At Plivo, my pricing and margin analytics work contributed to a 15% improvement in SMS margins.',
-    'plivo_fraud': 'At Plivo, I worked on fraud detection automation and provider rate-sheet ingestion.',
-    'dashboards': 'I build analytics dashboards and reporting workflows using SQL, Python, Tableau and Power BI.',
-    'stakeholders': 'I own analytics work end to end and collaborate with business stakeholders and junior analysts.',
+    'amex_sme': 'At American Express, I automated US SME account distribution with real-time ETL and redesigned territory mapping and sales incentive rules.',
+    'amex_genai': 'At American Express, I built a multi-agent GenAI dispute resolution system adopted by 900+ consultants, cutting resolution time from 45 to 5 minutes across 10,000+ annual queries.',
+    'amex_call_compliance': 'At American Express, I built an LLM-powered sales call-compliance pipeline covering approximately 10,000 calls per month and increasing QA coverage from approximately 30% to 100%.',
+    'amex_nl_sql': 'At American Express, I shipped an NL-to-SQL tool allowing operations and sales teams to query data in plain English using validated SQL.',
+    'plivo_margin': 'At Plivo, I grew SMS margins by 15% through rate-card revisions, competitive pricing analysis and margin frameworks.',
+    'plivo_fraud': 'At Plivo, I led an SMS fraud detection tool that saved approximately $400K–$450K per year.',
+    'dashboards': 'At Plivo, I built dashboards using QuickSight, Power BI and Tableau with Python, Redshift and Google Sheets integrations.',
+    'stakeholders': 'At American Express, I own analytics projects end to end, from scoping to field rollout, while leading a team of two analysts.',
+    'zs_forecasting': 'At ZS Associates, I improved forecast accuracy to within 2–5% deviation using multivariate regression and feature scaling.',
 }
 
 
@@ -128,12 +131,15 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     # Short, bounded input improves latency and limits what leaves Atlas.
     # Send fact IDs and short topic labels, not the owner's contact information.
     fact_topics = {
-        'amex_sme': 'American Express US small business sales analytics',
-        'amex_genai': 'Multi-agent GenAI, RAG, SQL tool calling',
-        'plivo_margin': 'SMS pricing and 15% margin improvement',
-        'plivo_fraud': 'Fraud detection and provider rate-sheet automation',
-        'dashboards': 'SQL, Python, Tableau and Power BI dashboards',
-        'stakeholders': 'End-to-end analytics delivery and stakeholder collaboration',
+        'amex_sme': 'US SME account assignment, sales territories and ETL',
+        'amex_genai': 'Multi-agent GenAI dispute resolution, RAG, SQL tools',
+        'amex_call_compliance': 'Sales call compliance QA automation and LLM',
+        'amex_nl_sql': 'Natural-language SQL analytics self-service',
+        'plivo_margin': 'SMS pricing, margin optimization',
+        'plivo_fraud': 'Fraud detection and annual cost savings',
+        'dashboards': 'SQL, Python, Tableau, QuickSight and Power BI dashboards',
+        'stakeholders': 'End-to-end analytics ownership and two analysts',
+        'zs_forecasting': 'Regression, forecasting, pharma analytics',
     }
     prompt = (
         'Choose exactly 2 or 3 relevant career fact IDs for a manager analytics job. '
