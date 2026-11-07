@@ -9,7 +9,6 @@ import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Depends, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
@@ -19,10 +18,9 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from .config import ROOT, env, settings, demo_mode
 from .db import session, engine, Job, Contact, Outreach, Integration, Event, get_kv, set_kv, seed_demo, log, now
-from .calendar_rules import next_fixed_send, daily_search_due
+from .calendar_rules import next_fixed_send
 from .integrations import (google_oauth_url, google_code_exchange, google_userinfo, save_google_refresh,
-    send_telegram, answer_telegram_callback, rocketreach_lookup)
-from .discovery import discover, research_contacts
+    rocketreach_lookup)
 from .workflow import approve_job, prepare_outreach, cancel_outreach, monitor_replies, send_due
 
 app = FastAPI(title='Analytics Job Agent', version='0.1.0', docs_url=None, redoc_url=None)
@@ -425,10 +423,6 @@ def reschedule(outreach_id: str, user: str = Depends(owner)):
         log(db, 'outreach_rescheduled', row.job_id, row.id, due_at=row.due_at)
         return json_outreach(row)
 
-class SearchRequest(BaseModel):
-    engine: str = Field(default='api', max_length=20)
-
-
 class SearchPromptUpdate(BaseModel):
     prompt: str = Field(min_length=100, max_length=24000)
 
@@ -455,33 +449,6 @@ def update_search_prompt(data: SearchPromptUpdate, user: str = Depends(owner)):
     return {'saved': True, 'characters': len(data.prompt)}
 
 
-@app.post('/api/discover')
-def discover_now(data: SearchRequest = SearchRequest(), user: str = Depends(owner)):
-    if demo_mode():
-        raise HTTPException(409, 'Demo mode never searches or imports real jobs.')
-    if data.engine not in ('api', 'chatgpt'):
-        raise HTTPException(422, 'Choose api or chatgpt')
-    with session() as db:
-        try:
-            prompt = get_kv(db, 'search_prompt_override') if data.engine == 'chatgpt' else None
-            result = discover(db, engine=data.engine, prompt=prompt)
-        except (RuntimeError, ValueError) as e:
-            raise HTTPException(422, str(e))
-        except httpx.HTTPError as e:
-            raise HTTPException(502, f'Search provider failed: {type(e).__name__}')
-        return result
-
-@app.post('/api/jobs/{job_id}/research')
-def research_now(job_id: str, user: str = Depends(owner)):
-    with session() as db:
-        job = db.get(Job, job_id)
-        if not job:
-            raise HTTPException(404, 'Job not found')
-        if demo_mode():
-            raise HTTPException(409, 'Discovery disabled in demo')
-        contacts = research_contacts(db, job, limit=2)
-        return {'contacts_found': len(contacts)}
-
 @app.get('/api/cron/tick')
 def cron_tick(request: Request):
     secret = env('CRON_SECRET')
@@ -494,59 +461,6 @@ def cron_tick(request: Request):
         replies = monitor_replies(db)
         db.flush()
         sending = send_due(db)
-        last_day = get_kv(db, 'last_search_ist_date')
-        search = {'skipped': True}
-        if daily_search_due(now(), last_day) and env('SERPER_API_KEY'):
-            try:
-                search = discover(db)
-                if not search['errors'] or search['created']:
-                    today = now().astimezone(ZoneInfo(settings()['timezone'])).date().isoformat()
-                    set_kv(db, 'last_search_ist_date', today)
-            except Exception as exc:
-                search = {'error': str(exc)[:200]}
-        return {'replies': replies, 'sending': sending, 'discovery': search}
+        return {'replies': replies, 'sending': sending, 'discovery': 'disabled; ChatGPT research only'}
 
-@app.post('/api/telegram/webhook')
-async def telegram_webhook(request: Request):
-    secret = env('TELEGRAM_WEBHOOK_SECRET')
-    if not secret or not hmac.compare_digest(request.headers.get('x-telegram-bot-api-secret-token', ''), secret):
-        raise HTTPException(401, 'Invalid Telegram webhook signature')
-    update = await request.json()
-    callback = update.get('callback_query') or {}
-    data = callback.get('data') or ''
-    chat_id = str((callback.get('message') or {}).get('chat', {}).get('id', ''))
-    if chat_id != env('TELEGRAM_CHAT_ID'):
-        return {'ok': False, 'reason': 'Unrecognized Telegram chat'}
-    if data.startswith('approve:') or data.startswith('reject:'):
-        action, job_id = data.split(':', 1)
-        if not re_uuid(job_id):
-            return {'ok': False}
-        result = ''
-        with session() as db:
-            job = db.get(Job, job_id)
-            if not job or job.is_demo:
-                result = 'Job not found'
-            elif action == 'approve':
-                try:
-                    row = approve_job(db, job_id)
-                    result = f'Approved: {row.status}'
-                except ValueError as exc:
-                    result = str(exc)
-            elif action == 'reject':
-                if db.execute(select(Outreach).where(Outreach.job_id == job_id)).scalar_one_or_none():
-                    result = 'Already approved; cancel in dashboard'
-                else:
-                    job.status = 'rejected'
-                    log(db, 'job_rejected', job_id, via='telegram')
-                    result = 'Rejected'
-        answer_telegram_callback(callback.get('id', ''), result)
-        return {'ok': True, 'message': result}
-    return {'ok': True}
 
-def re_uuid(v: str) -> bool:
-    import uuid
-    try:
-        uuid.UUID(v)
-        return True
-    except Exception:
-        return False
