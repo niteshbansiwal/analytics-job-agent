@@ -41,6 +41,15 @@ ALIASES = {
     'contact_1_profile': 'contact_1_linkedin', 'contact_2_profile': 'contact_2_linkedin',
     'contact_1_linkedin_url': 'contact_1_linkedin',
     'contact_2_linkedin_url': 'contact_2_linkedin',
+    # Human-readable ChatGPT approval exports (November 2026).
+    'job_source_url': 'post_url',
+    'posting_date_evidence': 'post_age',
+    'contact_name': 'contact_1_name',
+    'contact_role': 'contact_1_title',
+    'linkedin_url': 'contact_1_linkedin',
+    'fit_notes': 'fit_why',
+    'fit_match': 'fit_why',
+    'contact_association': 'contact_1_association',
 }
 
 
@@ -79,26 +88,53 @@ def _public_https_url(value: str) -> str:
         return ''
 
 
+REQUIRED_HEADERS = frozenset(('company', 'title', 'post_url'))
+
+
+def _has_job_headers(values) -> bool:
+    return REQUIRED_HEADERS.issubset({normalize_header(v) for v in values})
+
+
 def _rows_from_values(values):
+    """Accept both exact Atlas Jobs headers and ChatGPT's Approved Jobs layout.
+
+    Search the first 20 rows for a header, ignoring title/metadata lines. An
+    explicit Approval column is treated as a safety filter, not an instruction
+    to import rejected or pending jobs.
+    """
     it = iter(values)
-    try:
-        headers = [normalize_header(h) for h in next(it)]
-    except StopIteration:
-        raise ValueError('The spreadsheet is empty.')
-    if not {'company', 'title', 'post_url'}.issubset(set(headers)):
-        raise ValueError('The first row must include company, title and post_url columns. Download the Atlas template.')
+    header_row, headers = None, None
+    for number, values in enumerate(it, start=1):
+        if number > 20:
+            break
+        if _has_job_headers(values):
+            header_row = number
+            headers = [normalize_header(h) for h in values]
+            break
+    if headers is None:
+        raise ValueError(
+            'Could not find job column headings in the first 20 rows. '
+            'Expected Company, Role/Title, and Job Source URL/post_url. '
+            'The Atlas template and ChatGPT Approved Jobs exports are both supported.'
+        )
     if len([h for h in headers if h]) != len(set(h for h in headers if h)):
-        raise ValueError('Duplicate column names found in the header row.')
+        raise ValueError('Duplicate column names found in the job header row.')
     result = []
-    for number, values in enumerate(it, start=2):
+    for number, values in enumerate(it, start=header_row + 1):
         if not any(cell_text(v) for v in values):
             continue
-        if len(result) >= MAX_ROWS:
-            raise ValueError(f'Maximum {MAX_ROWS} non-empty job rows per import.')
         item = {h: cell_text(v) for h, v in zip(headers, values) if h}
+        # Only approved rows may cross from ChatGPT into Atlas.
+        if 'approval' in headers and item.get('approval', '').strip().casefold() not in (
+                'approved', 'approve', 'yes', 'true', '1'):
+            continue
+        if not any(item.get(k) for k in REQUIRED_HEADERS):
+            continue  # trailing notes/metadata are not jobs
+        if len(result) >= MAX_ROWS:
+            raise ValueError(f'Maximum {MAX_ROWS} non-empty approved job rows per import.')
         result.append((number, item))
     if not result:
-        raise ValueError('The file has column headings but no job rows.')
+        raise ValueError('No approved job rows found. Check the Approval column or use the Atlas Jobs template.')
     return result
 
 
@@ -125,8 +161,17 @@ def parse_file(data: bytes, filename: str):
     try:
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
         try:
-            ws = wb['Jobs'] if 'Jobs' in wb.sheetnames else wb.active
-            return _rows_from_values(ws.iter_rows(values_only=True))
+            # Prefer the Atlas sheet, then ChatGPT's human-readable approval sheet.
+            names = [n for n in ('Jobs', 'Approved Jobs') if n in wb.sheetnames]
+            names += [n for n in wb.sheetnames if n not in names]
+            for name in names:
+                ws = wb[name]
+                for number, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                    if number > 20:
+                        break
+                    if _has_job_headers(row):
+                        return _rows_from_values(ws.iter_rows(values_only=True))
+            return _rows_from_values(wb[names[0]].iter_rows(values_only=True))
         finally:
             wb.close()
     except ValueError:
