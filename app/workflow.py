@@ -46,6 +46,8 @@ def preferred_contact(db: Session, job_id: str) -> Contact | None:
           0 if 'recruiter' in c.category.lower() else 1))[0]
 
 def approve_job(db: Session, job_id: str) -> Outreach:
+    if not demo_mode():
+        raise ValueError('Use Review email + resume with Gemini. Live outreach requires approved master PDF, resume preview and explicit Gmail draft review.')
     job = db.get(Job, job_id)
     if not job:
         raise ValueError('Job not found')
@@ -85,6 +87,8 @@ def approve_job(db: Session, job_id: str) -> Outreach:
     return row
 
 def prepare_outreach(db: Session, outreach_id: str) -> Outreach:
+    if not demo_mode():
+        raise ValueError('Use the reviewed application workflow; automatic legacy Gmail draft preparation is disabled.')
     row = db.get(Outreach, outreach_id)
     if not row:
         raise ValueError('Outreach not found')
