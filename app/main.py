@@ -406,7 +406,7 @@ def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
     timestamp = now()
     status = result.get('status', 'api_error')
     provider_id = str(result.get('provider_id') or previous.get('provider_id') or '')
-    check_count = int(previous.get('check_count') or 0) + (1 if is_check else 0)
+    check_count = int(previous.get('check_count') or 0) + 1 if is_check else 0
     lookup_count = int(previous.get('lookup_count') or 0) + (0 if is_check else 1)
 
     if status in ('pending', 'awaiting_email') and not provider_id:
@@ -417,13 +417,16 @@ def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
         contact.email = result['email']
         contact.email_status = result.get('email_status', 'rocketreach_unverified')
     # A temporary provider failure should not erase a live lookup.
-    if status in ('api_error', 'rate_limited') and is_check and previous.get('status') in ('pending', 'awaiting_email'):
+    temporary_error = status in ('api_error', 'rate_limited') and is_check
+    if temporary_error and previous.get('status') in ('pending', 'awaiting_email'):
         status = previous['status']
         check_count = int(previous.get('check_count') or 0)
 
     delays = (12, 40, 120, 180)
     next_check_at = ((timestamp + timedelta(seconds=delays[min(check_count, len(delays) - 1)])).isoformat()
                      if status in ('pending', 'awaiting_email') and provider_id else '')
+    if temporary_error and status in ('pending', 'awaiting_email'):
+        next_check_at = (timestamp + timedelta(seconds=90)).isoformat()
     detail = str(result.get('detail') or '')[:180]
     if status == 'not_found' and provider_id:
         detail = 'No professional email after checking the existing RocketReach lookup; optional paid retry available later.'
