@@ -233,6 +233,8 @@ def overview(user: str = Depends(owner)):
                'gmail': bool(integration) and not demo_mode(),
                'telegram': bool(env('TELEGRAM_BOT_TOKEN') and env('TELEGRAM_CHAT_ID')),
                'rocketreach': bool(env('ROCKETREACH_API_KEY')),
+                'gemini': bool(env('GEMINI_API_KEY')),
+                'gemini_model': env('GEMINI_MODEL', 'gemini-3.8-flash'),
                'serper': bool(env('SERPER_API_KEY')),
                'openai': bool(env('OPENAI_API_KEY')),
                'database': 'SQLite / local' if db.bind.dialect.name == 'sqlite' else 'PostgreSQL',
