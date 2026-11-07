@@ -336,6 +336,7 @@ def reviewed_resume_pdf(job_id: str, data: ResumePreviewInput,
                         user: str = Depends(owner)):
     """Preview exactly the source-resume bullets selected by the owner."""
     from .resume import tailored_pdf
+    from .resume_master import get_master
     with session() as db:
         job = db.get(Job, job_id)
         if not job or job.is_demo:
@@ -343,7 +344,7 @@ def reviewed_resume_pdf(job_id: str, data: ResumePreviewInput,
         try:
             pdf = tailored_pdf(job.jd or '', job.title,
                                selected_bullets=data.selected_bullets,
-                               master_pdf=__import__('app.resume_master', fromlist=['get_master']).get_master(db))
+                               master_pdf=get_master(db))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         if not pdf.startswith(b'%PDF'):
@@ -376,6 +377,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             or not data.subject.strip() or not data.body.strip()):
         raise HTTPException(422, 'Subject or email body is invalid.')
     from .resume import tailored_pdf
+    from .resume_master import get_master
     from .integrations import (gmail_create_draft, gmail_update_draft,
                                gmail_get_draft, inspect_gmail_draft,
                                gmail_delete_draft)
@@ -404,7 +406,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
         try:
             pdf = tailored_pdf(job.jd or '', job.title,
                                selected_bullets=data.selected_bullets,
-                               master_pdf=__import__('app.resume_master', fromlist=['get_master']).get_master(db))
+                               master_pdf=get_master(db))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         if not pdf.startswith(b'%PDF'):
