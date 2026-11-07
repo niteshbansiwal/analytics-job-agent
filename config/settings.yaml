@@ -1,7 +1,7 @@
 version: 1
 timezone: Asia/Kolkata
 search:
-  enabled: true                   # Actual search still requires SERPER_API_KEY
+  enabled: true                   # Live search requires SERPER_API_KEY and/or OPENAI_API_KEY
   cron: '0 9 * * 1-5'            # Local 09:00 IST; scheduler converts to UTC
   weekdays: [0, 1, 2, 3, 4]     # Monday=0
   at: '09:00'
