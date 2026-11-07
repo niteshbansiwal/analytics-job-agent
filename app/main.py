@@ -1,4 +1,5 @@
 from __future__ import annotations
+import httpx
 import base64
 import hmac
 import hashlib
@@ -128,6 +129,7 @@ def auth_status(request: Request):
         'google_ready': bool(google_ready),
         'database_configured': database_configured,
         'search_configured': bool(env('SERPER_API_KEY')),
+        'chatgpt_search_configured': bool(env('OPENAI_API_KEY')),
         'gmail_oauth_configured': bool(google_ready and env('TOKEN_ENCRYPTION_KEY') and database_configured),
         'send_enabled': False,  # Live sending is safety-locked until independently enabled.
         'demo_available': True,
@@ -362,15 +364,44 @@ def reschedule(outreach_id: str, user: str = Depends(owner)):
         log(db, 'outreach_rescheduled', row.job_id, row.id, due_at=row.due_at)
         return json_outreach(row)
 
+class SearchRequest(BaseModel):
+    engine: str = Field(default='api', max_length=20)
+
+
+class SearchPromptUpdate(BaseModel):
+    prompt: str = Field(min_length=100, max_length=24000)
+
+
+@app.get('/api/search/prompt')
+def get_search_prompt(user: str = Depends(owner)):
+    from .agentic_search import master_prompt
+    with session() as db:
+        prompt = get_kv(db, 'search_prompt_override') or master_prompt()
+    return {'prompt': prompt, 'editable': True, 'source': 'user master prompt'}
+
+
+@app.put('/api/search/prompt')
+def update_search_prompt(data: SearchPromptUpdate, user: str = Depends(owner)):
+    with session() as db:
+        set_kv(db, 'search_prompt_override', data.prompt.strip())
+        log(db, 'search_prompt_updated', length=len(data.prompt))
+    return {'saved': True, 'characters': len(data.prompt)}
+
+
 @app.post('/api/discover')
-def discover_now(user: str = Depends(owner)):
+def discover_now(data: SearchRequest = SearchRequest(), user: str = Depends(owner)):
     if demo_mode():
-        raise HTTPException(409, 'Demo never imports real jobs; switch to live mode and configure Serper')
+        raise HTTPException(409, 'Demo mode never searches or imports real jobs.')
+    if data.engine not in ('api', 'chatgpt'):
+        raise HTTPException(422, 'Choose api or chatgpt')
     with session() as db:
         try:
-            result = discover(db)
-        except RuntimeError as e:
+            prompt = get_kv(db, 'search_prompt_override') if data.engine == 'chatgpt' else None
+            result = discover(db, engine=data.engine, prompt=prompt)
+        except (RuntimeError, ValueError) as e:
             raise HTTPException(422, str(e))
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f'Search provider failed: {type(e).__name__}')
         return result
 
 @app.post('/api/jobs/{job_id}/research')
