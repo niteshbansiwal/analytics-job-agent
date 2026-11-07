@@ -4,6 +4,20 @@ A runnable **private-first prototype** for Manager/Senior Manager analytics job 
 
 **Status:** Local demo is runnable without API keys. Live integrations are implemented as adapters but **not connected or end-to-end verified with real credentials**. Scheduled sending and automated follow-ups are **off** by default; no emails are sent in demo mode. Five fictional sample cards are labelled DEMO, not presented as real job postings.
 
+## Recommended: No paid AI API (ChatGPT scheduled task → Excel → Atlas)
+
+Atlas now supports **owner-only Excel (.xlsx) and CSV imports** without OpenAI, Serper, or RocketReach API keys. Google sign-in and the persistent Neon database are still required.
+
+1. Copy the detailed research prompt from **Atlas → View / copy daily research prompt** into a ChatGPT scheduled task. The prompt combines the original long-form research requirements with the exact spreadsheet output schema. The standalone version is in `config/scheduled_chatgpt_csv_prompt.md`.
+2. Have ChatGPT search public job posts on your preferred schedule. Ask it to create a downloadable Excel file with a sheet called `Jobs` or return CSV text if the scheduled-task environment cannot create attachments.
+3. In Atlas, click **Import ChatGPT spreadsheet**, then upload the completed .xlsx/.csv file, or paste CSV text. You can download a blank Excel template from the same dialog.
+4. Atlas validates real HTTPS URLs, skips duplicates by canonical posting URL, scores job relevance, stores up to two evidence-linked potential hiring contacts, and saves the jobs to PostgreSQL.
+5. Open the original job and contact links to verify accuracy before approving. Imported dates and hiring relationships are **unverified claims**, not independent confirmation. No email is sent on import.
+
+**Important automation boundary:** ChatGPT Plus scheduled tasks and the Atlas website do not share an automatic file-delivery channel. A scheduled task producing an Excel file **does not mean Atlas receives it**. Upload or paste the result manually. A fully automatic push would need an explicitly configured integration (e.g., an authorized Google Sheets/Drive workflow), which is not implemented or tested here. Do not assume scheduled tasks can POST to arbitrary Atlas endpoints.
+
+**Spreadsheet columns** (first row, case-insensitive): `company,title,location,post_url,source,posted_at,post_age,author_name,author_url,apply_url,jd,fit_why,contact_1_name,contact_1_title,contact_1_linkedin,contact_1_evidence,contact_1_email,contact_2_name,contact_2_title,contact_2_linkedin,contact_2_evidence,contact_2_email`. Only `company`, `title`, and `post_url` are required. File size <=2 MB, <=250 nonempty job rows. No private credentials are embedded in spreadsheet files.
+
 ## Quick start — local demo (no external credentials)
 
 Requires Python 3.11+.
@@ -32,7 +46,7 @@ python -m pytest -q
 | Dashboard | Responsive HTML/CSS/vanilla JS | Job cards, recruiter profiles, outreach queue, analytics, events, settings |
 | API | Python FastAPI | Session cookie restricted to configured Google login in live mode |
 | Database | SQLAlchemy / SQLite locally; PostgreSQL in production | Jobs, contacts, scheduled outreach, encrypted OAuth tokens, events |
-| Search | Two independent engines: Serper public index + OpenAI Responses API web_search | Source-backed URLs required; no logged-in LinkedIn scraping |
+| Search and ingestion | ChatGPT scheduled research → owner-uploaded Excel/CSV; optional Serper / OpenAI API engines | **No paid API needed for spreadsheet import**; all uploaded claims remain unverified |
 | Contact research | Public LinkedIn-profile index + RocketReach API | Profiles labelled potential unless verified; contacts/emails may be unavailable |
 | Resume tailoring | Fact-locked ReportLab PDF | Reorders actual master-resume achievements to match JD; no invented facts |
 | Gmail | Google OAuth and Gmail REST API | Drafts created on approval, live edits preserved, scheduled send |
