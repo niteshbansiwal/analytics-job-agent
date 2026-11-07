@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#17243a"><title>Atlas — Your private analytics job agent</title>
+<link rel="stylesheet" href="/assets/styles.css">
+<style>
+.welcome{min-height:100vh;background:linear-gradient(145deg,#f4f9f7,#f6f8fb 55%,#eef2f9);display:flex;flex-direction:column}
+.welcome-nav{height:78px;display:flex;align-items:center;justify-content:space-between;max-width:1120px;width:calc(100% - 48px);margin:auto}
+.welcome-logo{display:flex;align-items:center;gap:12px;font:800 26px Manrope,Arial,sans-serif;color:#18273e}
+.welcome-logo i{font-style:normal;display:grid;place-items:center;width:40px;height:40px;border-radius:12px;background:#17243a;color:#b2f2d6}
+.welcome-main{width:calc(100% - 48px);max-width:1120px;margin:65px auto 100px;display:grid;grid-template-columns:1.05fr .95fr;gap:80px;align-items:center}
+.welcome-kicker{font-size:11px;font-weight:800;letter-spacing:1.5px;color:#28846c;margin-bottom:18px}
+.welcome h1{font-size:clamp(35px,4.3vw,56px);line-height:1.15;letter-spacing:-2px;margin:0 0 20px}
+.welcome h1 span{color:#25846c}
+.welcome-intro{font-size:16px;color:#65758a;line-height:1.75;max-width:540px;margin-bottom:35px}
+.welcome-steps{display:grid;gap:22px;margin-top:42px}
+.welcome-step{display:flex;gap:15px;align-items:flex-start}
+.welcome-step b{flex:0 0 33px;width:33px;height:33px;border-radius:10px;background:#e0f4ec;color:#277a63;display:grid;place-items:center}
+.welcome-step strong{display:block;font-size:14px}
+.welcome-step small{display:block;color:#718194;font-size:12px;margin-top:4px;line-height:1.6}
+.welcome-card{background:white;border:1px solid #e7ecf0;border-radius:24px;box-shadow:0 20px 75px rgba(26,46,64,.07);padding:38px}
+.welcome-card .card-mark{height:52px;width:52px;display:grid;place-items:center;border-radius:15px;background:#e4f5ee;color:#28846c;font-size:27px;margin-bottom:23px}
+.welcome-card h2{font:800 24px Manrope,Arial,sans-serif;letter-spacing:-.7px;margin:0 0 10px}
+.welcome-card p{color:#728092;line-height:1.7;font-size:13px;margin:0 0 24px}
+.google-button{display:flex;align-items:center;justify-content:center;gap:13px;width:100%;padding:15px 16px;border-radius:11px;background:#17243a;color:white;font-weight:700;font-size:14px;border:0;text-decoration:none}
+.google-button:hover{background:#2a3e56;color:white;text-decoration:none}
+.google-button:disabled{background:#b3bdc8;cursor:not-allowed}
+.google-letter{font-size:20px;font-weight:800;color:#d2fae5}
+.welcome-divider{height:1px;background:#e8edf2;margin:24px 0}
+.welcome-demo{display:block;text-align:center;padding:13px;border-radius:10px;background:#f4f7f9;color:#324963;font-weight:700;font-size:13px}
+.welcome-status{font-size:12px;color:#64748b;margin-top:15px;line-height:1.5}
+.welcome-footer{margin:auto auto 22px;color:#8a96a4;font-size:11px}
+@media(max-width:840px){.welcome-main{grid-template-columns:1fr;gap:30px;margin:35px auto 70px}.welcome-card{padding:26px}.welcome-nav{height:70px}.welcome-steps{margin-top:30px}}
+</style></head><body><div class="welcome">
+<nav class="welcome-nav"><div class="welcome-logo"><i>✳</i> atlas<span style="color:#2b9977">.</span></div><a href="/preview.html" style="font-weight:700;font-size:13px">Try the demo ↗</a></nav>
+<main class="welcome-main"><div><div class="welcome-kicker">YOUR PRIVATE CAREER RESEARCH AGENT</div><h1>Find better roles.<br><span>Reach the right people.</span></h1>
+<p class="welcome-intro">A focused workspace for Manager and Senior Manager Analytics opportunities. Combine job-search APIs with independent AI web research, review hiring contacts, and approve outreach on your terms.</p>
+<div class="welcome-steps">
+<div class="welcome-step"><b>1</b><div><strong>Sign in with Google</strong><small>Secure, owner-only access to your private workspace.</small></div></div>
+<div class="welcome-step"><b>2</b><div><strong>Find jobs with two search engines</strong><small>Public job-index search and ChatGPT-powered research using your saved prompt.</small></div></div>
+<div class="welcome-step"><b>3</b><div><strong>Review sources and approve</strong><small>Check the original posting, dates, contacts and match. No immediate email is sent.</small></div></div>
+</div></div>
+<div class="welcome-card"><div class="card-mark">✳</div><h2>Welcome to Atlas</h2><p>Sign in with your configured Google account to open your job-search workspace. Gmail access is requested separately when you enable outreach.</p>
+<a class="google-button" id="google-login" href="/api/auth/google/start"><span class="google-letter">G</span><span id="login-label">Sign in with Google</span></a>
+<div class="welcome-status" id="login-status">Checking Google sign-in configuration…</div>
+<div class="welcome-divider"></div>
+<a class="welcome-demo" href="/preview.html">Explore the interactive demo →</a>
+<div class="welcome-status">The demo uses fictional job data. Live discovery requires configured API keys and a database. Sending is disabled by default.</div>
+</div></main><footer class="welcome-footer">ATLAS · PRIVATE BETA · HUMAN APPROVAL REQUIRED</footer></div>
+<script>
+(async()=>{
+ const label=document.getElementById('login-label'),button=document.getElementById('google-login'),status=document.getElementById('login-status');
+ try{
+  const response=await fetch('/api/auth/status',{credentials:'same-origin'});if(!response.ok)throw Error('Unable to check sign-in configuration');
+  const data=await response.json();
+  if(data.signed_in){label.textContent='Open my workspace';button.href='/app';status.textContent='You are already signed in.';return;}
+  if(!data.google_ready){button.removeAttribute('href');button.style.opacity='.55';button.style.cursor='not-allowed';button.addEventListener('click',e=>e.preventDefault());label.textContent='Google sign-in not configured';status.textContent='Set up Google OAuth and your private database in Vercel to activate sign-in. You can use the demo now.';return;}
+  status.textContent='Google sign-in is available. Only the configured owner account is permitted.';
+ }catch(e){status.textContent='Sign-in status could not be checked. The interactive demo is still available.';}
+})();
+</script></body></html>
