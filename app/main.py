@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
-from fastapi import FastAPI, HTTPException, Depends, Request, Response
+from fastapi import FastAPI, HTTPException, Depends, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, HttpUrl
@@ -334,6 +334,57 @@ def import_job(data: JobInput, user: str = Depends(owner)):
         db.flush()
         log(db, 'job_imported', row.id, url=url)
         return {'id': row.id, 'duplicate': False}
+
+class CsvImportInput(BaseModel):
+    csv_text: str = Field(min_length=10, max_length=400000)
+
+
+@app.get('/api/jobs/template.xlsx')
+def spreadsheet_template(user: str = Depends(owner)):
+    from .spreadsheet_import import template_xlsx
+    from io import BytesIO
+    return StreamingResponse(BytesIO(template_xlsx()),
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename="Atlas_Job_Import_Template.xlsx"'})
+
+
+@app.post('/api/jobs/import-spreadsheet')
+async def import_spreadsheet(file: UploadFile = File(...), user: str = Depends(owner)):
+    if demo_mode():
+        raise HTTPException(409, 'Real spreadsheet import is disabled in demo mode.')
+    from .spreadsheet_import import MAX_FILE_BYTES, parse_file, import_rows
+    filename = file.filename or ''
+    if not filename.lower().endswith(('.csv', '.xlsx')):
+        raise HTTPException(422, 'Choose a .xlsx or .csv file.')
+    try:
+        content = await file.read(MAX_FILE_BYTES + 1)
+        rows = parse_file(content, filename)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    finally:
+        await file.close()
+    with session() as db:
+        result = import_rows(db, rows)
+        log(db, 'spreadsheet_import_finished', **{k: result[k] for k in (
+            'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
+        return result
+
+
+@app.post('/api/jobs/import-csv')
+def import_pasted_csv(data: CsvImportInput, user: str = Depends(owner)):
+    if demo_mode():
+        raise HTTPException(409, 'Real spreadsheet import is disabled in demo mode.')
+    from .spreadsheet_import import parse_csv, import_rows
+    try:
+        rows = parse_csv(data.csv_text)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    with session() as db:
+        result = import_rows(db, rows)
+        log(db, 'pasted_csv_import_finished', **{k: result[k] for k in (
+            'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
+        return result
+
 
 @app.post('/api/outreach/{outreach_id}/prepare')
 def prepare(outreach_id: str, user: str = Depends(owner)):
