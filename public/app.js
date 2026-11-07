@@ -153,10 +153,10 @@ async function geminiPreview(id){
  try{
   toast('Selecting relevant achievements with Gemini…');
   const r=await api(`/api/jobs/${id}/gemini-preview`,{method:'POST'});
-  const status=r.mode==='gemini'?'Gemini selected relevant achievements':'Facts-only fallback (Gemini did not respond correctly)';
+  const status=r.mode==='gemini'?'Gemini selected relevant achievements':r.mode==='gemini_backup'?'Gemini selected achievements using the faster backup model':'Facts-only template — Gemini could not complete the request';
   const warning=r.warning?`<p class="hint" style="color:#a34e3b">${escapeHtml(r.warning)}</p>`:'';
   modal(`<h2>Gemini outreach preview</h2><p><strong>${escapeHtml(status)}</strong> · ${escapeHtml(r.model)}</p>
-  <p class="hint">Preview only. No Gmail draft, email or resume was created. Please review the claims before outreach.</p>
+  <p class="hint">Preview only. No Gmail draft, email or resume was created. Please review the claims before outreach.</p><p class="hint">${r.mode==='gemini_backup'?'Primary model: '+escapeHtml(r.primary_model)+' · Backup model: '+escapeHtml(r.model):r.mode==='facts_only_fallback'?'AI generation failed; this is a rule-based draft, not a Gemini-written email.':'Model response verified and fact IDs validated.'}</p>
   ${warning}
   <label class="form-label">Subject</label><input id="gemini-subject" class="form-input" value="${escapeHtml(r.subject)}">
   <label class="form-label" style="margin-top:12px">Email body</label><textarea id="gemini-body" class="form-input form-textarea" style="min-height:300px" rows="15">${escapeHtml(r.body)}</textarea>
