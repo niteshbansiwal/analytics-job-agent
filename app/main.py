@@ -20,7 +20,7 @@ from .config import ROOT, env, settings, demo_mode
 from .db import session, engine, Job, Contact, Outreach, Integration, Event, get_kv, set_kv, seed_demo, log, now
 from .calendar_rules import next_fixed_send
 from .integrations import (google_oauth_url, google_code_exchange, google_userinfo, save_google_refresh,
-    rocketreach_lookup)
+    rocketreach_lookup, rocketreach_check_status)
 from .workflow import approve_job, prepare_outreach, cancel_outreach, monitor_replies, send_due
 
 app = FastAPI(title='Analytics Job Agent', version='0.1.0', docs_url=None, redoc_url=None)
@@ -82,6 +82,7 @@ def json_job(job: Job, db: Session):
         'id': c.id, 'name': c.name, 'title': c.title, 'category': c.category,
         'linkedin_url': c.linkedin_url, 'evidence_url': c.evidence_url, 'reason': c.reason,
         'relationship': c.relationship, 'email': c.email, 'email_status': c.email_status,
+         'rocketreach_status': json.loads(get_kv(db, 'rocketreach:' + c.id, '{}')).get('status', 'not_started'),
       } for c in contacts],
       'outreach': json_outreach(outreach) if outreach else None,
     }
@@ -366,6 +367,90 @@ def add_contact(job_id: str, data: ContactInput, user: str = Depends(owner)):
         db.add(row)
         log(db, 'contact_added', job_id, email_present=bool(data.email))
         return {'saved': True}
+
+class RocketReachLookupInput(BaseModel):
+    retry: bool = False
+
+
+def _rocketreach_state(db: Session, contact_id: str) -> dict:
+    try:
+        return json.loads(get_kv(db, 'rocketreach:' + contact_id, '{}'))
+    except (TypeError, ValueError):
+        return {}
+
+
+def _save_rocketreach_result(db: Session, contact: Contact, result: dict) -> dict:
+    status = result.get('status', 'api_error')
+    provider_id = str(result.get('provider_id') or '')
+    if status == 'pending' and not provider_id:
+        status = 'api_error'
+        result = {'status': status, 'detail': 'Provider returned a pending lookup without a tracking ID'}
+    if status == 'returned':
+        contact.email = result['email']
+        contact.email_status = result.get('email_status', 'rocketreach_unverified')
+    state = {'status': status, 'provider_id': provider_id,
+             'checked_at': now().isoformat(),
+             'detail': result.get('detail', '')[:150]}
+    set_kv(db, 'rocketreach:' + contact.id, json.dumps(state))
+    log(db, 'rocketreach_lookup_result', contact.job_id,
+        contact_id=contact.id, status=status, email_found=bool(contact.email))
+    return {'status': status, 'email': contact.email if status == 'returned' else '',
+            'email_status': contact.email_status if status == 'returned' else '',
+            'detail': state['detail'], 'credit_note': 'Provider lookups may consume credits.'}
+
+
+@app.post('/api/contacts/{contact_id}/rocketreach/lookup')
+def lookup_contact_email(contact_id: str, data: RocketReachLookupInput,
+                         user: str = Depends(owner)):
+    """One explicit user-triggered RocketReach lookup; never send email."""
+    if demo_mode():
+        raise HTTPException(409, 'RocketReach lookup is disabled in demo mode.')
+    if not env('ROCKETREACH_API_KEY'):
+        raise HTTPException(409, 'Configure ROCKETREACH_API_KEY first.')
+    with session() as db:
+        contact = db.get(Contact, contact_id)
+        if not contact or not db.get(Job, contact.job_id) or db.get(Job, contact.job_id).is_demo:
+            raise HTTPException(404, 'Imported hiring contact not found.')
+        if contact.email:
+            return {'status': 'already_found', 'email': contact.email,
+                    'email_status': contact.email_status, 'detail': 'Existing email retained; no API credit used.'}
+        from urllib.parse import urlsplit
+        url = urlsplit(contact.linkedin_url)
+        if url.scheme != 'https' or (url.hostname or '').lower() not in (
+                'www.linkedin.com', 'linkedin.com', 'in.linkedin.com') or not url.path.startswith('/in/'):
+            raise HTTPException(422, 'A valid LinkedIn person profile URL is required.')
+        previous = _rocketreach_state(db, contact.id)
+        if previous and not data.retry:
+            return {'status': previous.get('status', 'unknown'), 'email': '',
+                    'detail': 'Lookup already attempted. Use Check status if pending; retry requires confirmation.',
+                    'credit_note': 'No new lookup or credit used.'}
+        try:
+            result = rocketreach_lookup(contact.linkedin_url)
+        except (httpx.HTTPError, ValueError) as exc:
+            result = {'status': 'api_error', 'detail': 'RocketReach request failed: ' + type(exc).__name__}
+        return _save_rocketreach_result(db, contact, result)
+
+
+@app.post('/api/contacts/{contact_id}/rocketreach/check')
+def check_contact_lookup(contact_id: str, user: str = Depends(owner)):
+    """Poll a previously initiated provider lookup, without creating another lookup."""
+    if demo_mode():
+        raise HTTPException(409, 'RocketReach lookup is disabled in demo mode.')
+    with session() as db:
+        contact = db.get(Contact, contact_id)
+        if not contact:
+            raise HTTPException(404, 'Contact not found.')
+        previous = _rocketreach_state(db, contact.id)
+        if previous.get('status') != 'pending' or not previous.get('provider_id'):
+            return {'status': previous.get('status', 'not_started'),
+                    'email': contact.email, 'detail': 'No pending lookup to check.'}
+        try:
+            result = rocketreach_check_status(previous['provider_id'], contact.linkedin_url)
+        except (httpx.HTTPError, ValueError) as exc:
+            return {'status': 'pending', 'email': '',
+                    'detail': 'Provider status check failed: ' + type(exc).__name__ + '. Try again later.'}
+        return _save_rocketreach_result(db, contact, result)
+
 
 class JobInput(BaseModel):
     company: str = Field(min_length=2, max_length=180)
