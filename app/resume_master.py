@@ -143,6 +143,13 @@ def render_master(pdf: bytes, selection: dict | None = None) -> bytes:
     page = doc[0]
     originals = [_projects(page, low, high, i != 3)
                  for i, (_, low, high, _, _, _) in enumerate(SECTIONS)]
+    total_chars = sum(len(''.join(text for text, _ in project['segments']))
+                      for section in originals for project in section)
+    kept_chars = sum(len(''.join(text for text, _ in originals[i][j]['segments']))
+                     for i in range(len(SECTIONS)) for j in chosen[str(i)])
+    if kept_chars < total_chars * .80:
+        raise ValueError('Keep at least 80% of the original project text; select more core projects.')
+
     regular_bytes, bold_bytes = doc.extract_font(9)[3], doc.extract_font(5)[3]
     regular, bold = fitz.Font(fontbuffer=regular_bytes), fitz.Font(fontbuffer=bold_bytes)
     updates = {}
