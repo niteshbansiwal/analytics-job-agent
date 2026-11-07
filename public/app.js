@@ -66,7 +66,7 @@ document.addEventListener('click',async e=>{
 document.addEventListener('input',e=>{if(e.target.id==='job-search'){state.search=e.target.value;const sel=state.selected;const caret=e.target.selectionStart;render();state.selected=sel;const next=$('job-search');if(next){next.focus();next.setSelectionRange(caret,caret)}}});
 document.addEventListener('submit',async e=>{if(!['import-form','contact-form','prompt-form'].includes(e.target.id))return;e.preventDefault();const form=e.target;const payload=Object.fromEntries(new FormData(form).entries());try{if(form.id==='prompt-form'){await api('/api/search/prompt',{method:'PUT',body:JSON.stringify(payload)});closeModal();toast('Research prompt saved for ChatGPT web search');return}const path=form.id==='import-form'?'/api/jobs/import':`/api/jobs/${form.dataset.jobid}/contacts`;await api(path,{method:'POST',body:JSON.stringify(payload)});closeModal();await load();toast(form.id==='import-form'?'Job added to pipeline':'Contact saved')}catch(err){toast(err.message,true)}});
 $('close-dialog').onclick=closeModal;$('toggle-menu').onclick=()=> $('app-shell').classList.toggle('open');
-$('edit-search-prompt').onclick=promptDialog;
+if($('edit-search-prompt')) $('edit-search-prompt').onclick=promptDialog;
 $('search-now').onclick=async()=>{
  if(state.data?.demo){toast('Demo mode: live job discovery is disabled. Test the sample approval flow instead.',true);return}
  const engines=[['api',state.data?.integrations.serper],['chatgpt',state.data?.integrations.openai]].filter(x=>x[1]).map(x=>x[0]);
