@@ -114,7 +114,7 @@ def _rows_from_values(values):
     if headers is None:
         raise ValueError(
             'Could not find job column headings in the first 20 rows. '
-            'Expected Company, Role/Title, and Job Source URL/post_url. '
+            'Expected company, title and post_url columns (also accepts Company, Role, Job Source URL). '
             'The Atlas template and ChatGPT Approved Jobs exports are both supported.'
         )
     if len([h for h in headers if h]) != len(set(h for h in headers if h)):
@@ -134,7 +134,7 @@ def _rows_from_values(values):
             raise ValueError(f'Maximum {MAX_ROWS} non-empty approved job rows per import.')
         result.append((number, item))
     if not result:
-        raise ValueError('No approved job rows found. Check the Approval column or use the Atlas Jobs template.')
+        raise ValueError('The file has column headings but no job rows marked Approved. Check the Approval column or use the Atlas Jobs template.')
     return result
 
 
