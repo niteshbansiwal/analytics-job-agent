@@ -173,7 +173,7 @@ USER'S EXACT RESEARCH BRIEF:
             'https://api.openai.com/v1/responses',
             headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
             json={
-                'model': env('OPENAI_SEARCH_MODEL', 'gpt-5.6'),
+                'model': env('OPENAI_SEARCH_MODEL', 'gpt-6.1-sol'),
                 'reasoning': {'effort': 'low'},
                 'tools': [{'type': 'web_search'}],
                 'tool_choice': 'required',
