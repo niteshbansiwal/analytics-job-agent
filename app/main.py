@@ -82,7 +82,9 @@ def json_job(job: Job, db: Session):
         'id': c.id, 'name': c.name, 'title': c.title, 'category': c.category,
         'linkedin_url': c.linkedin_url, 'evidence_url': c.evidence_url, 'reason': c.reason,
         'relationship': c.relationship, 'email': c.email, 'email_status': c.email_status,
-         'rocketreach_status': json.loads(get_kv(db, 'rocketreach:' + c.id, '{}')).get('status', 'not_started'),
+         'rocketreach_status': _rocketreach_state(db, c.id).get('status', 'not_started'),
+         'rocketreach_next_check_at': _rocketreach_state(db, c.id).get('next_check_at', ''),
+         'rocketreach_lookup_count': _rocketreach_state(db, c.id).get('lookup_count', 0),
       } for c in contacts],
       'outreach': json_outreach(outreach) if outreach else None,
     }
@@ -374,82 +376,151 @@ class RocketReachLookupInput(BaseModel):
 
 def _rocketreach_state(db: Session, contact_id: str) -> dict:
     try:
-        return json.loads(get_kv(db, 'rocketreach:' + contact_id, '{}'))
+        state = json.loads(get_kv(db, 'rocketreach:' + contact_id, '{}'))
+        if not isinstance(state, dict):
+            return {}
+        # Older Atlas versions incorrectly marked a completed, empty result
+        # as final. Existing provider IDs are still eligible for rechecks.
+        if state.get('status') == 'not_found' and state.get('provider_id') and not state.get('check_count'):
+            state['status'] = 'awaiting_email'
+        return state
     except (TypeError, ValueError):
         return {}
 
 
-def _save_rocketreach_result(db: Session, contact: Contact, result: dict) -> dict:
+def _rocketreach_public(state: dict, contact: Contact) -> dict:
+    status = state.get('status', 'not_started')
+    return {'status': status,
+            'email': contact.email if status in ('returned', 'already_found') else '',
+            'email_status': contact.email_status if status in ('returned', 'already_found') else '',
+            'detail': state.get('detail', ''),
+            'next_check_at': state.get('next_check_at', ''),
+            'check_count': state.get('check_count', 0),
+            'lookup_count': state.get('lookup_count', 0)}
+
+
+def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
+                             *, is_check: bool = False) -> dict:
+    from datetime import timedelta
+    previous = _rocketreach_state(db, contact.id)
+    timestamp = now()
     status = result.get('status', 'api_error')
-    provider_id = str(result.get('provider_id') or '')
-    if status == 'pending' and not provider_id:
-        status = 'api_error'
-        result = {'status': status, 'detail': 'Provider returned a pending lookup without a tracking ID'}
+    provider_id = str(result.get('provider_id') or previous.get('provider_id') or '')
+    check_count = int(previous.get('check_count') or 0) + (1 if is_check else 0)
+    lookup_count = int(previous.get('lookup_count') or 0) + (0 if is_check else 1)
+
+    if status in ('pending', 'awaiting_email') and not provider_id:
+        status = 'not_found' if status == 'awaiting_email' else 'api_error'
+    if status == 'awaiting_email' and check_count >= 3:
+        status = 'not_found'
     if status == 'returned':
         contact.email = result['email']
         contact.email_status = result.get('email_status', 'rocketreach_unverified')
-    state = {'status': status, 'provider_id': provider_id,
-             'checked_at': now().isoformat(),
-             'detail': result.get('detail', '')[:150]}
+    # A temporary provider failure should not erase a live lookup.
+    if status in ('api_error', 'rate_limited') and is_check and previous.get('status') in ('pending', 'awaiting_email'):
+        status = previous['status']
+        check_count = int(previous.get('check_count') or 0)
+
+    delays = (12, 40, 120, 180)
+    next_check_at = ((timestamp + timedelta(seconds=delays[min(check_count, len(delays) - 1)])).isoformat()
+                     if status in ('pending', 'awaiting_email') and provider_id else '')
+    detail = str(result.get('detail') or '')[:180]
+    if status == 'not_found' and provider_id:
+        detail = 'No professional email after checking the existing RocketReach lookup; optional paid retry available later.'
+    state = {
+        'status': status, 'provider_id': provider_id,
+        'checked_at': timestamp.isoformat(), 'next_check_at': next_check_at,
+        'first_lookup_at': previous.get('first_lookup_at') or timestamp.isoformat(),
+        'last_lookup_at': previous.get('last_lookup_at', '') if is_check else timestamp.isoformat(),
+        'lookup_count': lookup_count, 'check_count': check_count,
+        'detail': detail,
+    }
     set_kv(db, 'rocketreach:' + contact.id, json.dumps(state))
-    log(db, 'rocketreach_lookup_result', contact.job_id,
-        contact_id=contact.id, status=status, email_found=bool(contact.email))
-    return {'status': status, 'email': contact.email if status == 'returned' else '',
-            'email_status': contact.email_status if status == 'returned' else '',
-            'detail': state['detail'], 'credit_note': 'Provider lookups may consume credits.'}
+    log(db, 'rocketreach_status_checked' if is_check else 'rocketreach_lookup_result',
+        contact.job_id, contact_id=contact.id, status=status,
+        lookup_count=lookup_count, check_count=check_count,
+        email_found=bool(contact.email))
+    return _rocketreach_public(state, contact)
 
 
 @app.post('/api/contacts/{contact_id}/rocketreach/lookup')
 def lookup_contact_email(contact_id: str, data: RocketReachLookupInput,
                          user: str = Depends(owner)):
-    """One explicit user-triggered RocketReach lookup; never send email."""
+    """Start at most two explicit person lookups; rechecks never start another."""
     if demo_mode():
         raise HTTPException(409, 'RocketReach lookup is disabled in demo mode.')
     if not env('ROCKETREACH_API_KEY'):
         raise HTTPException(409, 'Configure ROCKETREACH_API_KEY first.')
     with session() as db:
-        contact = db.get(Contact, contact_id)
+        # PostgreSQL row lock prevents two clicks from creating concurrent paid lookups.
+        contact = db.get(Contact, contact_id, with_for_update=True)
         if not contact or not db.get(Job, contact.job_id) or db.get(Job, contact.job_id).is_demo:
             raise HTTPException(404, 'Imported hiring contact not found.')
         if contact.email:
             return {'status': 'already_found', 'email': contact.email,
-                    'email_status': contact.email_status, 'detail': 'Existing email retained; no API credit used.'}
+                    'email_status': contact.email_status, 'detail': 'Email already saved; no lookup started.'}
         from urllib.parse import urlsplit
         url = urlsplit(contact.linkedin_url)
         if url.scheme != 'https' or (url.hostname or '').lower() not in (
                 'www.linkedin.com', 'linkedin.com', 'in.linkedin.com') or not url.path.startswith('/in/'):
             raise HTTPException(422, 'A valid LinkedIn person profile URL is required.')
         previous = _rocketreach_state(db, contact.id)
-        if previous and not data.retry:
-            return {'status': previous.get('status', 'unknown'), 'email': '',
-                    'detail': 'Lookup already attempted. Use Check status if pending; retry requires confirmation.',
-                    'credit_note': 'No new lookup or credit used.'}
+        if previous:
+            if not data.retry:
+                result = _rocketreach_public(previous, contact)
+                result['detail'] = 'Existing lookup retained; use status recheck instead of another paid lookup.'
+                return result
+            if previous.get('status') in ('pending', 'awaiting_email') and previous.get('provider_id'):
+                raise HTTPException(409, 'Recheck the existing RocketReach lookup first; do not pay again.')
+            if int(previous.get('lookup_count') or 1) >= 2:
+                raise HTTPException(409, 'Two lookups already attempted for this contact. Review manually.')
+            from datetime import timedelta
+            last = previous.get('last_lookup_at') or previous.get('checked_at')
+            if last:
+                try:
+                    if now() < datetime.fromisoformat(last) + timedelta(minutes=10):
+                        raise HTTPException(409, 'Wait 10 minutes before another potentially chargeable lookup.')
+                except ValueError:
+                    pass
         try:
             result = rocketreach_lookup(contact.linkedin_url)
         except (httpx.HTTPError, ValueError) as exc:
             result = {'status': 'api_error', 'detail': 'RocketReach request failed: ' + type(exc).__name__}
-        return _save_rocketreach_result(db, contact, result)
+        return _save_rocketreach_result(db, contact, result, is_check=False)
 
 
 @app.post('/api/contacts/{contact_id}/rocketreach/check')
 def check_contact_lookup(contact_id: str, user: str = Depends(owner)):
-    """Poll a previously initiated provider lookup, without creating another lookup."""
+    """Recheck existing RocketReach profile ID without initiating a fresh lookup."""
     if demo_mode():
         raise HTTPException(409, 'RocketReach lookup is disabled in demo mode.')
     with session() as db:
-        contact = db.get(Contact, contact_id)
+        contact = db.get(Contact, contact_id, with_for_update=True)
         if not contact:
             raise HTTPException(404, 'Contact not found.')
+        if contact.email:
+            return {'status': 'already_found', 'email': contact.email,
+                    'email_status': contact.email_status, 'detail': 'Email already saved.'}
         previous = _rocketreach_state(db, contact.id)
-        if previous.get('status') != 'pending' or not previous.get('provider_id'):
-            return {'status': previous.get('status', 'not_started'),
-                    'email': contact.email, 'detail': 'No pending lookup to check.'}
+        if previous.get('status') not in ('pending', 'awaiting_email') or not previous.get('provider_id'):
+            result = _rocketreach_public(previous, contact)
+            result['detail'] = 'No outstanding provider lookup to check.'
+            return result
+        next_check = previous.get('next_check_at')
+        if next_check:
+            try:
+                if now() < datetime.fromisoformat(next_check):
+                    result = _rocketreach_public(previous, contact)
+                    result['detail'] = 'Waiting for provider enrichment; no new lookup started.'
+                    return result
+            except ValueError:
+                pass
         try:
             result = rocketreach_check_status(previous['provider_id'], contact.linkedin_url)
         except (httpx.HTTPError, ValueError) as exc:
-            return {'status': 'pending', 'email': '',
-                    'detail': 'Provider status check failed: ' + type(exc).__name__ + '. Try again later.'}
-        return _save_rocketreach_result(db, contact, result)
+            result = {'status': 'api_error', 'detail': 'Provider status check failed: ' + type(exc).__name__}
+        return _save_rocketreach_result(db, contact, result, is_check=True)
+
 
 
 class JobInput(BaseModel):
