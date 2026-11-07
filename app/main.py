@@ -263,6 +263,69 @@ def approve(job_id: str, user: str = Depends(owner)):
             raise HTTPException(400, str(e))
         return json_outreach(row)
 
+@app.post('/api/jobs/{job_id}/test-gmail-draft')
+def test_gmail_resume_attachment(job_id: str, user: str = Depends(owner)):
+    """Explicit owner-initiated smoke test. Draft to SELF; never send or approve job.
+
+    Creates a real Gmail draft containing a generated PDF, reads the draft
+    back from Gmail and checks its recipient and attachment filename.
+    """
+    if demo_mode():
+        raise HTTPException(409, 'Gmail draft testing is unavailable in demo mode.')
+    from .resume import tailored_pdf
+    from .integrations import (gmail_create_draft, gmail_get_draft,
+                               inspect_gmail_draft, gmail_delete_draft)
+    import re
+    with session() as db:
+        connection = db.get(Integration, 'gmail')
+        if not connection:
+            raise HTTPException(409, 'Connect Gmail under Configuration first.')
+        job = db.get(Job, job_id)
+        if not job or job.is_demo:
+            raise HTTPException(404, 'Imported job not found.')
+        # This is only a delivery/attachment test, not the final AI resume.
+        pdf = tailored_pdf(job.jd, job.title)
+        if not pdf.startswith(b'%PDF'):
+            raise HTTPException(500, 'Generated resume is not a valid PDF.')
+        safe_company = re.sub(r'[^A-Za-z0-9_-]+', '_', job.company).strip('_')[:36] or 'Job'
+        filename = f'ATLAS_TEST_{safe_company}_Resume.pdf'
+        subject = f'[ATLAS TEST - DO NOT SEND] Resume PDF attachment: {job.company}'
+        body = ('This is a private Atlas Gmail attachment test addressed to myself.\\n'
+                'The attached PDF is generated from the current resume template, '
+                'not the final AI-personalized version.\\n'
+                'Please review the attachment and discard this draft after checking.\\n'
+                'No recruiter has been contacted.')
+        draft_id = ''
+        try:
+            created = gmail_create_draft(db, connection.owner_email, subject, body, pdf, filename)
+            draft_id = created['id']
+            verified = inspect_gmail_draft(gmail_get_draft(db, draft_id))
+            if (verified['to'].lower() != connection.owner_email.lower()
+                    or verified['attachment_count'] != 1
+                    or verified['attachment_filenames'] != [filename]
+                    or verified['subject'] != subject):
+                raise RuntimeError('Draft verification mismatch (recipient, subject or PDF attachment).')
+            log(db, 'gmail_attachment_test_verified', job.id,
+                gmail_draft_id=draft_id, attachment_count=1)
+            return {'verified': True, 'job_id': job.id, 'company': job.company,
+                    'to': connection.owner_email, 'subject': subject,
+                    'attachment_count': 1, 'filename': filename,
+                    'draft_id': draft_id,
+                    'gmail_url': 'https://mail.google.com/mail/u/0/#drafts',
+                    'sent': False}
+        except Exception as exc:
+            if draft_id:
+                try:
+                    gmail_delete_draft(db, draft_id)
+                except Exception:
+                    pass
+            detail = (f'Gmail API returned HTTP {exc.response.status_code}'
+                      if isinstance(exc, httpx.HTTPStatusError)
+                      else type(exc).__name__)
+            raise HTTPException(502, f'Gmail draft verification failed: {detail}. '
+                                'Check Gmail OAuth and API permissions. No email was sent.')
+
+
 @app.post('/api/jobs/{job_id}/reject')
 def reject(job_id: str, user: str = Depends(owner)):
     with session() as db:
