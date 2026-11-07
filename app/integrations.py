@@ -173,63 +173,95 @@ def answer_telegram_callback(callback_id: str, message: str):
                     json={'callback_query_id': callback_id, 'text': message})
 
 def _rocketreach_email_result(payload: dict | list, requested_linkedin: str = '') -> dict:
-    """Return only a professional email after a completed, identity-consistent lookup."""
+    """Parse a classic RocketReach lookup/checkStatus response without declaring premature misses.
+
+    A completed lookup can initially have no work email. Preserve its profile ID
+    so subsequent checkStatus calls can re-read the SAME lookup.
+    """
     from urllib.parse import urlsplit
     import re
 
+    envelope = payload if isinstance(payload, dict) else {}
     if isinstance(payload, list):
         person = payload[0] if payload else {}
     elif isinstance(payload, dict):
-        person = payload.get('person') or payload.get('profile') or payload
+        person = payload.get('person') or payload.get('profile')
+        if not isinstance(person, dict):
+            for field in ('people', 'profiles', 'results', 'persons', 'data'):
+                collection = payload.get(field)
+                if isinstance(collection, list) and collection:
+                    person = collection[0]
+                    break
+                if isinstance(collection, dict):
+                    person = collection.get('person') or collection.get('profile') or collection
+                    break
+        if not isinstance(person, dict):
+            person = payload
     else:
         person = {}
     if not isinstance(person, dict):
-        return {'status': 'api_error', 'detail': 'Unexpected provider response'}
+        return {'status': 'api_error', 'detail': 'Unexpected provider response format'}
 
-    person_id = str(person.get('id') or (payload.get('id') if isinstance(payload, dict) else '') or '')
-    state = str(person.get('status') or (payload.get('status') if isinstance(payload, dict) else '') or '').lower()
+    person_id = str(person.get('id') or person.get('person_id') or envelope.get('id') or '')
+    state = str(person.get('status') or envelope.get('status') or '').lower().strip()
 
     def slug(url):
         if not url:
             return ''
-        parsed = urlsplit(url if '://' in url else 'https://' + url)
+        parsed = urlsplit(url if '://' in str(url) else 'https://' + str(url))
         host = (parsed.hostname or '').lower()
         match = re.search(r'^/in/([^/?#]+)', parsed.path, re.I)
         return match.group(1).lower() if host in ('linkedin.com', 'www.linkedin.com', 'in.linkedin.com') and match else ''
 
     supplied_slug = slug(requested_linkedin)
-    returned_slug = slug(person.get('linkedin_url') or '')
+    returned_slug = slug(person.get('linkedin_url') or person.get('linkedin_ext_url') or '')
     if supplied_slug and returned_slug and supplied_slug != returned_slug:
         return {'status': 'identity_mismatch', 'provider_id': person_id,
-                'detail': 'RocketReach returned a different LinkedIn profile; no email saved.'}
-    if state != 'complete':
-        return {'status': 'pending' if state in ('progress', 'searching', 'queued', 'pending') else 'api_error',
-                'provider_id': person_id,
-                'detail': 'Lookup still processing' if state in ('progress', 'searching', 'queued', 'pending') else 'Unexpected lookup status'}
+                'detail': 'Provider profile does not match requested LinkedIn identity'}
 
-    # Personal email addresses must never be used for hiring outreach.
+    if state in ('progress', 'searching', 'queued', 'pending', 'not queued', 'not_queued'):
+        return {'status': 'pending', 'provider_id': person_id,
+                'detail': 'Provider is still enriching this profile'}
+    if state not in ('complete', 'success'):
+        return {'status': 'api_error', 'provider_id': person_id,
+                'detail': 'Unexpected provider lookup state'}
+
     candidates = []
-    work = person.get('current_work_email')
-    if work:
-        candidates.append((work, 'rocketreach_work_email'))
-    emails = person.get('emails') or []
-    if isinstance(emails, (str, dict)):
-        emails = [emails]
-    for item in emails:
-        if isinstance(item, str):
-            candidates.append((item, 'rocketreach_unverified'))
-        elif isinstance(item, dict) and str(item.get('type') or '').lower() not in ('personal', 'private'):
-            value = item.get('email') or item.get('address') or ''
-            validity = str(item.get('smtp_valid') or item.get('status') or '').lower()
-            candidates.append((value, 'rocketreach_smtp_valid' if validity == 'valid' else 'rocketreach_unverified'))
+    for field in ('current_work_email', 'work_email', 'current_email'):
+        if person.get(field):
+            candidates.append((person[field], 'rocketreach_work_email', False))
+    for field in ('emails', 'work_emails', 'email_addresses', 'email'):
+        entries = person.get(field) or []
+        if isinstance(entries, (str, dict)):
+            entries = [entries]
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if isinstance(item, str):
+                candidates.append((item, 'rocketreach_unverified', False))
+            elif isinstance(item, dict):
+                kind = str(item.get('type') or item.get('category') or '').lower()
+                if kind in ('personal', 'private', 'home'):
+                    continue
+                validity = str(item.get('smtp_valid') or item.get('validity') or item.get('status') or '').lower()
+                label = 'rocketreach_smtp_valid' if validity in ('valid', 'true') else 'rocketreach_unverified'
+                candidates.append((item.get('email') or item.get('address') or item.get('value') or '', label, False))
+
     consumer = {'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com',
                 'live.com', 'aol.com', 'rediffmail.com', 'proton.me', 'protonmail.com'}
-    for email, email_status in candidates:
+    for email, label, _ in candidates:
+        if isinstance(email, dict):
+            email = email.get('email') or email.get('address') or ''
         email = str(email).strip().lower()
         if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email) and email.split('@')[-1] not in consumer:
             return {'status': 'returned', 'provider_id': person_id,
-                    'email': email, 'email_status': email_status}
-    return {'status': 'not_found', 'provider_id': person_id}
+                    'email': email, 'email_status': label}
+
+    # Do NOT call this a final "not found" yet: provider can reveal email later.
+    return {'status': 'awaiting_email' if person_id else 'not_found',
+            'provider_id': person_id,
+            'detail': ('Lookup completed but no professional email is available yet'
+                       if person_id else 'No professional email or provider ID was returned')}
 
 
 def _rocketreach_request(path: str, *, params: dict) -> dict | list:
