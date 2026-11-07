@@ -110,7 +110,7 @@ def ranking(company: str, title: str, location: str, desc: str, post_url: str) -
         points += .25
     return min(9.7, round(points, 1)), '; '.join(matches[:5]) or 'Preliminary role-title match', 'Full JD not independently accessible; verify requirements and seniority.'
 
-def discover(db: Session, *, notify: bool = True) -> dict:
+def discover_api(db: Session, *, notify: bool = True) -> dict:
     cfg = settings()['search']
     if not cfg['enabled']:
         raise RuntimeError('Discovery is disabled in settings.yaml')
@@ -175,6 +175,83 @@ def discover(db: Session, *, notify: bool = True) -> dict:
                 errors.append(f'Telegram delivery: {type(exc).__name__}')
     return {'created': len(created), 'top_job_ids': [j.id for j in created[:cfg['shortlist_size']]], 'errors': errors,
             'note': 'Indexed search snippets are not proof a vacancy remains open. Verify before sending.'}
+
+def discover_chatgpt(db: Session, *, prompt: str | None = None, notify: bool = True) -> dict:
+    """Second discovery engine: independent model-driven, source-cited web search."""
+    from .agentic_search import search_with_chatgpt
+    cfg = settings()['search']
+    if not cfg['enabled']:
+        raise RuntimeError('Discovery is disabled in settings.yaml')
+    candidates = search_with_chatgpt(prompt)
+    created, errors = [], []
+    for hit in candidates:
+        url = canonical(hit['post_url'])
+        if db.execute(select(Job).where(Job.post_url == url)).scalar_one_or_none():
+            continue
+        # Cross-platform dedupe: same company, title and location is probably the same vacancy.
+        duplicate = db.execute(select(Job).where(
+            Job.company.ilike(hit['company']),
+            Job.title.ilike(hit['title']),
+            Job.location.ilike(hit['location'])
+        )).scalar_one_or_none()
+        if duplicate:
+            continue
+        score, why, gaps = ranking(hit['company'], hit['title'], hit['location'],
+                                   hit['description'], url)
+        if hit.get('fit_notes'):
+            why = (why + '; ' + hit['fit_notes'])[:1200]
+        if hit.get('gaps'):
+            gaps = ('Model-identified gaps (not independently verified): ' + hit['gaps'])[:900]
+        job = Job(company=hit['company'], title=hit['title'], location=hit['location'],
+                  arrangement=hit['arrangement'], experience=hit['experience'],
+                  salary=hit['salary'], source='ChatGPT web search / ' + source_type(url),
+                  post_url=url, apply_url=hit.get('apply_url', ''),
+                  post_age=hit['post_age'], posting_date_kind='ai_reported_unverified',
+                  author_name=hit['author_name'], author_url=hit['author_url'],
+                  jd=hit['description'], fit_score=score, fit_why=why,
+                  gaps=gaps, leadership=hit['leadership'],
+                  verification='ai_cited_source_not_full_verification',
+                  status='discovered')
+        db.add(job)
+        db.flush()
+        created.append(job)
+        log(db, 'job_discovered', job.id, engine='chatgpt_web_search',
+            source_url=url, evidence='OpenAI web_search cited URL; vacancy details unverified')
+        for c in hit['contacts'][:cfg['max_contacts_per_job']]:
+            db.add(Contact(job_id=job.id, **c))
+    created.sort(key=lambda j: j.fit_score, reverse=True)
+    for job in created[:cfg['shortlist_size']]:
+        try:
+            research_contacts(db, job, limit=cfg['max_contacts_per_job'])
+        except Exception as exc:
+            errors.append(f'Contact lookup for {job.company}: {type(exc).__name__}')
+    if notify and created and settings()['notifications']['telegram_enabled']:
+        for job in created[:cfg['shortlist_size']]:
+            try:
+                send_telegram(
+                    f"AI research lead (unverified): {job.company} - {job.title}\n"
+                    f"{job.location} | {job.post_age}\nSource: {job.post_url}\n"
+                    f"Review the original post and contacts in Atlas before approving."
+                )
+            except Exception as exc:
+                errors.append(f'Telegram delivery: {type(exc).__name__}')
+    return {'engine': 'chatgpt', 'created': len(created),
+            'top_job_ids': [j.id for j in created[:cfg['shortlist_size']]],
+            'errors': errors,
+            'note': 'Source URL is cited by web search; job age, author, and current vacancy status still require verification.'}
+
+
+def discover(db: Session, *, notify: bool = True, engine: str = 'api',
+             prompt: str | None = None) -> dict:
+    """Choose an independent engine; UI runs each as a separate request to avoid timeouts."""
+    if engine == 'chatgpt':
+        return discover_chatgpt(db, prompt=prompt, notify=notify)
+    if engine == 'api':
+        result = discover_api(db, notify=notify)
+        result['engine'] = 'api'
+        return result
+    raise ValueError('Unknown search engine; use api or chatgpt')
+
 
 def research_contacts(db: Session, job: Job, limit: int = 2):
     if not env('SERPER_API_KEY'):
