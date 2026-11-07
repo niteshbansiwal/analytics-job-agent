@@ -55,7 +55,9 @@ def gemini_text(prompt: str, *, json_output: bool = False,
         },
     }
     if model.startswith('gemini-3'):
-        payload['generationConfig']['thinkingConfig'] = {'thinkingLevel': 'MINIMAL'}
+        # Gemini 3.8/3.7 Flash reject MINIMAL with HTTP 400. LOW is supported
+        # across the Gemini 3 Flash models used by Atlas.
+        payload['generationConfig']['thinkingConfig'] = {'thinkingLevel': 'LOW'}
     if json_output:
         payload['generationConfig']['responseMimeType'] = 'application/json'
     try:
