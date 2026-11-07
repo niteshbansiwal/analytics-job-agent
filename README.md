@@ -4,19 +4,19 @@ A runnable **private-first prototype** for Manager/Senior Manager analytics job 
 
 **Status:** Local demo is runnable without API keys. Live integrations are implemented as adapters but **not connected or end-to-end verified with real credentials**. Scheduled sending and automated follow-ups are **off** by default; no emails are sent in demo mode. Five fictional sample cards are labelled DEMO, not presented as real job postings.
 
-## Recommended: No paid AI API (ChatGPT scheduled task → Excel → Atlas)
+## Recommended workflow: ChatGPT notification → approval → Excel → Atlas
 
-Atlas now supports **owner-only Excel (.xlsx) and CSV imports** without OpenAI, Serper, or RocketReach API keys. Google sign-in and the persistent Neon database are still required.
+**No Telegram, no separate OpenAI API subscription, and no job-search API inside Atlas.** ChatGPT's existing daily job-search task (8:00 AM Asia/Kolkata) finds real Manager/Senior Manager Analytics openings. Task notifications require the user's ChatGPT notification settings to be enabled.
 
-1. Copy the detailed research prompt from **Atlas → View / copy daily research prompt** into a ChatGPT scheduled task. The prompt combines the original long-form research requirements with the exact spreadsheet output schema. The standalone version is in `config/scheduled_chatgpt_csv_prompt.md`.
-2. Have ChatGPT search public job posts on your preferred schedule. Ask it to create a downloadable Excel file with a sheet called `Jobs` or return CSV text if the scheduled-task environment cannot create attachments.
-3. In Atlas, click **Import ChatGPT spreadsheet**, then upload the completed .xlsx/.csv file, or paste CSV text. You can download a blank Excel template from the same dialog.
-4. Atlas validates real HTTPS URLs, skips duplicates by canonical posting URL, scores job relevance, stores up to two evidence-linked potential hiring contacts, and saves the jobs to PostgreSQL.
-5. Open the original job and contact links to verify accuracy before approving. Imported dates and hiring relationships are **unverified claims**, not independent confirmation. No email is sent on import.
+1. Open the daily ChatGPT job digest. Each sourced vacancy has a short date-scoped ID, original posting URL, date evidence, direct application link, fit/gaps, and up to two sourced hiring contacts. Prefer the last 48 hours, with excellent opportunities up to 45 days old separately marked.
+2. Reply **APPROVE J1, J3** (or the full IDs) in that ChatGPT conversation. Reject or skip other jobs. ChatGPT must not infer approval.
+3. After approval, ChatGPT prepares an **Excel (.xlsx)** file with a sheet named `Jobs` and only the approved rows. This is generated in the interactive ChatGPT conversation, not by the Atlas server or a paid API.
+4. Open Atlas, sign in with the owner Google account, click **Upload approved jobs**, and upload the file. Atlas validates HTTPS URLs, skips duplicates, scores fit, imports up to two evidence-linked potential hiring contacts, and stores records in Neon Postgres.
+5. Verify original links and decide separately whether to prepare outreach. **Neither ChatGPT approval nor spreadsheet import sends email.**
 
-**Important automation boundary:** ChatGPT Plus scheduled tasks and the Atlas website do not share an automatic file-delivery channel. A scheduled task producing an Excel file **does not mean Atlas receives it**. Upload or paste the result manually. A fully automatic push would need an explicitly configured integration (e.g., an authorized Google Sheets/Drive workflow), which is not implemented or tested here. Do not assume scheduled tasks can POST to arbitrary Atlas endpoints.
+**Boundary:** ChatGPT task notifications alert the user, but approval is conversational in ChatGPT; notification banners do not have interactive Approve/Reject buttons. ChatGPT cannot automatically deliver files to Atlas without another integration. Upload or paste the Excel/CSV manually. Do not assume the daily task can produce a file attachment; interactive ChatGPT can create it after approval.
 
-**Spreadsheet columns** (first row, case-insensitive): `company,title,location,post_url,source,posted_at,post_age,author_name,author_url,apply_url,jd,fit_why,contact_1_name,contact_1_title,contact_1_linkedin,contact_1_evidence,contact_1_email,contact_2_name,contact_2_title,contact_2_linkedin,contact_2_evidence,contact_2_email`. Only `company`, `title`, and `post_url` are required. File size <=2 MB, <=250 nonempty job rows. No private credentials are embedded in spreadsheet files.
+**Spreadsheet columns** (first row, case-insensitive): `company,title,location,post_url,source,posted_at,post_age,author_name,author_url,apply_url,jd,fit_why,contact_1_name,contact_1_title,contact_1_linkedin,contact_1_evidence,contact_1_email,contact_2_name,contact_2_title,contact_2_linkedin,contact_2_evidence,contact_2_email`. Only `company`, `title`, and `post_url` are required. File size <=2 MB, <=250 nonempty job rows. Imported source dates and hiring relationships remain unverified until checked.
 
 ## Quick start — local demo (no external credentials)
 
