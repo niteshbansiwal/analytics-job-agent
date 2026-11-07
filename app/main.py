@@ -226,7 +226,12 @@ def overview(user: str = Depends(owner)):
         integration = db.get(Integration, 'gmail')
         cfg = settings()
         return {
-            'demo': demo_mode(), 'jobs': [json_job(j, db) for j in jobs],
+            'demo': demo_mode(),
+            'resume_master': {'configured': bool(get_kv(db, 'approved_resume_master_pdf_b64', '')),
+                              'source': 'Nitesh_Bansiwal_Resume_-_2026-08(1).pdf',
+                              'minimum_original_projects': 15, 'original_project_count': 18,
+                              'one_page_required': True},
+            'jobs': [json_job(j, db) for j in jobs],
             'outreach': [json_outreach(o) for o in letters],
             'events': [{'action': e.action, 'details': json.loads(e.details or '{}'),
                         'at': e.created_at.isoformat(), 'job_id': e.job_id} for e in events],
