@@ -150,6 +150,7 @@ async function geminiTest(){
  }catch(err){toast('Gemini API test failed: '+err.message,true)}
 }
 let reviewedJobId = '';
+let reviewedPdfPreviewed = false;
 
 function selectedResumeBullets(){
  const boxes=Array.from(document.querySelectorAll('.resume-bullet'));
@@ -165,7 +166,7 @@ async function geminiPreview(id){
   toast('Gemini is selecting relevant achievements from your approved resume…');
   const r=await api('/api/jobs/'+id+'/gemini-preview',{method:'POST'});
   if(!r.resume?.positions?.length)throw Error('Resume selection was not returned. Please refresh Atlas.');
-  const j=jobOf(id);reviewedJobId=id;
+  const j=jobOf(id);reviewedJobId=id;reviewedPdfPreviewed=false;
   const status=r.mode==='gemini'?'Gemini selected relevant achievements':r.mode==='gemini_backup'?'Gemini selected achievements using the faster backup model':'Facts-only template — Gemini could not complete the request';
   const warning=r.warning?'<p class="hint" style="color:#a34e3b">'+escapeHtml(r.warning)+'</p>':'';
   const positions=r.resume.positions.map(p=>'<section style="margin-top:14px;border-top:1px solid #e1e6ee;padding-top:12px"><strong>'+escapeHtml(p.company)+' · '+escapeHtml(p.title)+'</strong><small style="display:block;color:#708096">'+escapeHtml(p.dates)+'</small>'+
@@ -204,6 +205,7 @@ async function previewReviewedResume(){
   if(win){win.location.href=url;}else{
    const a=document.createElement('a');a.href=url;a.download='Atlas_Reviewed_Resume.pdf';a.click();
   }
+  reviewedPdfPreviewed=true;
   setTimeout(()=>URL.revokeObjectURL(url),120000);
  }catch(e){if(win)win.close();toast(e.message,true)}
 }
@@ -212,6 +214,7 @@ async function createReviewedDraft(){
  const button=$('create-reviewed-draft');
  try{
   const selection=selectedResumeBullets();
+  if(!reviewedPdfPreviewed)throw Error('Preview the selected resume PDF before creating a Gmail draft.');
   if(!$('review-confirm')?.checked)throw Error('Confirm you reviewed the recipient, email and resume.');
   const job=jobOf(reviewedJobId);
   const contact=job?.contacts.find(c=>c.id===$('reviewed-contact')?.value);
@@ -259,6 +262,7 @@ document.addEventListener('click',async e=>{
  if(action==='cancel'){if(confirm('Cancel this unsent draft or follow-up?'))return mutate(`/api/outreach/${id}/cancel`)}
  if(action==='prepare')return mutate(`/api/outreach/${id}/prepare`);
 });
+document.addEventListener('change',e=>{if(e.target.classList?.contains('resume-bullet')){reviewedPdfPreviewed=false;if($('review-confirm'))$('review-confirm').checked=false;}});
 document.addEventListener('input',e=>{if(e.target.id==='job-search'){state.search=e.target.value;const sel=state.selected;const caret=e.target.selectionStart;render();state.selected=sel;const next=$('job-search');if(next){next.focus();next.setSelectionRange(caret,caret)}}});
 document.addEventListener('submit',async e=>{if(!['import-form','contact-form','prompt-form'].includes(e.target.id))return;e.preventDefault();const form=e.target;const payload=Object.fromEntries(new FormData(form).entries());try{if(form.id==='prompt-form'){await api('/api/search/prompt',{method:'PUT',body:JSON.stringify(payload)});closeModal();toast('Research prompt saved for ChatGPT web search');return}const path=form.id==='import-form'?'/api/jobs/import':`/api/jobs/${form.dataset.jobid}/contacts`;await api(path,{method:'POST',body:JSON.stringify(payload)});closeModal();await load();toast(form.id==='import-form'?'Job added to pipeline':'Contact saved')}catch(err){toast(err.message,true)}});
 $('close-dialog').onclick=closeModal;$('toggle-menu').onclick=()=> $('app-shell').classList.toggle('open');
