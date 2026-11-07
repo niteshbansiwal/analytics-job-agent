@@ -37,13 +37,13 @@ function jobCard(j){return `<div class="job-card ${j.id===state.selected?'select
 function contactCard(c,index){if(!c)return `<div class="contact-unknown">Contact ${index} — Not identified. No hiring relationship or email is assumed.</div>`;
 const rr=c.rocketreach_status||'not_started';
 const canLookup=state.data?.integrations.rocketreach&&c.linkedin_url&&!c.email;
-const recheck=['pending','awaiting_email'].includes(rr);
+const recheck=['pending','awaiting_email','pending_manual'].includes(rr);
 const exhausted=Number(c.rocketreach_lookup_count||0)>=2;
 const action=recheck?'rocketreach-check':'rocketreach';
-const label=recheck?'↻ Recheck existing lookup (no new lookup)':rr==='not_started'?'⌕ Find work email via RocketReach':exhausted?'Maximum lookups reached':'↻ Retry paid RocketReach lookup';
+const label=rr==='pending_manual'?'↻ Check existing lookup manually':recheck?'↻ Recheck existing lookup (no new lookup)':rr==='not_started'?'⌕ Find work email via RocketReach':exhausted?'Maximum lookups reached':'↻ Retry paid RocketReach lookup';
 const lookupButton=canLookup?`<button class="btn btn-small btn-ghost" style="margin-top:9px" data-action="${action}" data-id="${c.id}" data-retry="${rr!=='not_started'}" ${exhausted&&!recheck?'disabled':''}>${label}</button>`:'';
 const next=c.rocketreach_next_check_at?new Date(c.rocketreach_next_check_at).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit'}):'';
-const statusText=rr==='awaiting_email'?'No email yet — automatically rechecking the same lookup':rr==='pending'?'RocketReach is enriching this contact':rr==='not_found'?'No professional email after available checks; manual retry may consume another credit':rr.replaceAll('_',' ');
+const statusText=rr==='awaiting_email'?'No email yet — automatically rechecking the same lookup':rr==='pending'?'RocketReach is enriching this contact':rr==='pending_manual'?'Still processing — automatic checks paused; you can check again manually':rr==='not_found'?'No professional email after available checks; manual retry may consume another credit':rr.replaceAll('_',' ');
 const lookupInfo=rr!=='not_started'&&!c.email?`<p class="hint">RocketReach: ${escapeHtml(statusText)}${next&&recheck?` · Next check around ${escapeHtml(next)} IST`:''}</p>`:'';
 return `<div class="contact-box"><div class="contact-top"><div class="contact-avatar">${escapeHtml(initials(c.name))}</div><div class="contact-info"><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.category)} · ${escapeHtml(c.relationship)}</small></div>${c.email?'<span class="status scheduled">Email found</span>':''}</div><p>${escapeHtml(c.reason||'Connection to this opening requires verification.')}</p>${c.email?`<p><b>Email:</b> ${escapeHtml(c.email)} <span class="muted">(${escapeHtml(c.email_status)})</span></p>`:''}${c.linkedin_url?`<a class="contact-link" href="${safeUrl(c.linkedin_url)}" target="_blank" rel="noreferrer">View LinkedIn profile ↗</a>`:''}${lookupInfo}${lookupButton}</div>`}
 function detailPanel(){const j=jobOf(state.selected);if(!j)return `<section class="panel"><div class="empty">Choose a job to view hiring contacts and fit.</div></section>`;
