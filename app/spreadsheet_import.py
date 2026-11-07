@@ -87,7 +87,7 @@ def _rows_from_values(values):
         raise ValueError('The spreadsheet is empty.')
     if not {'company', 'title', 'post_url'}.issubset(set(headers)):
         raise ValueError('The first row must include company, title and post_url columns. Download the Atlas template.')
-    if len(headers) != len(set(h for h in headers if h)):
+    if len([h for h in headers if h]) != len(set(h for h in headers if h)):
         raise ValueError('Duplicate column names found in the header row.')
     result = []
     for number, values in enumerate(it, start=2):
