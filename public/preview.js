@@ -13,6 +13,9 @@ const json=(obj,status=200)=>new Response(JSON.stringify(obj),{status,headers:{'
 const native=window.fetch.bind(window);
 window.fetch=async(input,opts={})=>{const u=typeof input==='string'?input:input.url;if(!u.startsWith('/api/'))return native(input,opts);
 const method=(opts.method||'GET').toUpperCase();
+if(u==='/api/search/prompt'&&method==='GET')return json({prompt:sessionStorage.getItem('atlasDemoPrompt')||'DEMO PROMPT — Search publicly indexed LinkedIn hiring posts for Manager and Senior Manager Analytics jobs posted in the last 45 days. Prioritize the last 48 hours. Find original job links, posting dates, actual posters, and up to two relevant hiring contacts per role. Never invent people, dates or URLs. This browser-only demo does not perform a real search.',editable:true,source:'demo placeholder'});
+if(u==='/api/search/prompt'&&method==='PUT'){const p=JSON.parse(opts.body||'{}');if((p.prompt||'').length<100)return json({detail:'Prompt must contain at least 100 characters'},422);sessionStorage.setItem('atlasDemoPrompt',p.prompt);return json({saved:true,characters:p.prompt.length});}
+if(u==='/api/discover'&&method==='POST')return json({detail:'Browser-only demo: no live job search or API calls are made.'},409);
 if(u==='/api/overview')return json(data);
 if(u==='/api/health')return json({ok:true,demo:true,version:'browser-preview'});
 const match=u.match(/^\/api\/jobs\/([^/]+)\/(approve|reject|contacts)$/);
