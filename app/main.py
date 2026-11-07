@@ -252,6 +252,44 @@ def overview(user: str = Depends(owner)):
             },
         }
 
+@app.get('/api/resume/master')
+def resume_master_status(user: str = Depends(owner)):
+    """Report master readiness without exposing private resume content."""
+    from .resume_master import get_master, MASTER_NAME, MIN_PROJECTS
+    with session() as db:
+        try:
+            configured = get_master(db) is not None
+        except ValueError:
+            configured = False
+        return {'configured': configured, 'source': MASTER_NAME,
+                'minimum_projects': MIN_PROJECTS, 'total_projects': 18,
+                'preserve_original_layout': True, 'page_count': 1}
+
+
+@app.post('/api/resume/master')
+async def upload_resume_master(file: UploadFile = File(...),
+                               user: str = Depends(owner)):
+    """One-time, authenticated upload of the exact approved master resume PDF."""
+    from .resume_master import save_master, MASTER_NAME
+    if demo_mode():
+        raise HTTPException(409, 'Master upload is available only in live mode.')
+    if file.content_type not in ('application/pdf', 'application/octet-stream'):
+        raise HTTPException(422, 'Upload the approved PDF file.')
+    raw = await file.read(1_000_001)
+    await file.close()
+    if len(raw) > 1_000_000:
+        raise HTTPException(413, 'Resume PDF must be smaller than 1 MB.')
+    with session() as db:
+        try:
+            save_master(db, raw)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        log(db, 'approved_master_resume_uploaded', source=MASTER_NAME, bytes=len(raw))
+    return {'configured': True, 'source': MASTER_NAME,
+            'page_count': 1, 'minimum_projects': 15,
+            'original_layout_preserved': True}
+
+
 @app.post('/api/integrations/gemini/test')
 def test_gemini_api(user: str = Depends(owner)):
     """Owner-triggered live API smoke test. No job or personal data is transmitted."""
@@ -278,8 +316,11 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         name = next((c.name for c in contacts if c.email), '') or (
             contacts[0].name if contacts else '')
         result = build_email_preview(job.company, job.title, job.jd or '', name)
-        from .resume import resume_selection
-        result['resume'] = resume_selection(job.jd or '', job.title, result['selected_fact_ids'])
+        from .resume_master import get_master, master_selection
+        master = get_master(db)
+        if master is None:
+            raise HTTPException(409, 'Upload the approved original resume PDF in Configuration before Gemini review.')
+        result['resume'] = master_selection(master, job.jd or '', job.title)
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
             draft_created=False, email_sent=False)
@@ -301,7 +342,8 @@ def reviewed_resume_pdf(job_id: str, data: ResumePreviewInput,
             raise HTTPException(404, 'Imported job not found.')
         try:
             pdf = tailored_pdf(job.jd or '', job.title,
-                               selected_bullets=data.selected_bullets)
+                               selected_bullets=data.selected_bullets,
+                               master_pdf=__import__('app.resume_master', fromlist=['get_master']).get_master(db))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         if not pdf.startswith(b'%PDF'):
@@ -361,7 +403,8 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             raise HTTPException(409, 'Existing Gmail draft: confirm replacement before overwriting its edits.')
         try:
             pdf = tailored_pdf(job.jd or '', job.title,
-                               selected_bullets=data.selected_bullets)
+                               selected_bullets=data.selected_bullets,
+                               master_pdf=__import__('app.resume_master', fromlist=['get_master']).get_master(db))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         if not pdf.startswith(b'%PDF'):
@@ -461,7 +504,8 @@ def test_gmail_resume_attachment(job_id: str, user: str = Depends(owner)):
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found.')
         # This is only a delivery/attachment test, not the final AI resume.
-        pdf = tailored_pdf(job.jd, job.title)
+        from .resume_master import get_master
+        pdf = tailored_pdf(job.jd, job.title, master_pdf=get_master(db))
         if not pdf.startswith(b'%PDF'):
             raise HTTPException(500, 'Generated resume is not a valid PDF.')
         safe_company = re.sub(r'[^A-Za-z0-9_-]+', '_', job.company).strip('_')[:36] or 'Job'
