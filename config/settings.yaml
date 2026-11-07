@@ -1,0 +1,55 @@
+version: 1
+timezone: Asia/Kolkata
+search:
+  enabled: true                   # Actual search still requires SERPER_API_KEY
+  cron: '0 9 * * 1-5'            # Local 09:00 IST; scheduler converts to UTC
+  weekdays: [0, 1, 2, 3, 4]     # Monday=0
+  at: '09:00'
+  lookback_days: 45
+  recent_priority_hours: 48
+  shortlist_size: 5
+  max_queries: 8
+  max_contacts_per_job: 2
+  sources: [linkedin_public_posts, linkedin_jobs, naukri, instahyre, company_careers, wellfound, iimjobs]
+  cities: [Gurugram, 'Delhi NCR', Noida, Bengaluru, Hyderabad, Mumbai, Pune, India]
+  titles: ['Analytics Manager', 'Business Analytics Manager', 'Data Analytics Manager', 'Senior Manager Analytics', 'Business Intelligence Manager', 'Decision Science Manager', 'Risk Analytics Manager', 'Credit Analytics Manager', 'Payments Analytics Manager', 'Fraud Analytics Manager', 'Sales Analytics Manager', 'Commercial Analytics Manager', 'Data Strategy Manager', 'GenAI Analytics Manager']
+  require_source_url: true
+  avoid_unpermitted_scraping: true
+notifications:
+  telegram_enabled: true         # Only sends when bot token/chat ID are configured
+  top_five_daily: true
+  per_job_approval: true
+email:
+  provider: gmail
+  allowed_weekdays: [0, 1, 2, 3, 4]
+  start: '09:00'
+  end: '15:00'
+  preferred_send_time: '10:30'
+  holidays: []                   # YYYY-MM-DD; e.g. '2026-12-25'
+  create_gmail_draft_on_approval: true
+  schedule_without_second_approval: true
+  scheduled_sending_enabled: false # Turn true only once Google OAuth and end-to-end tests pass
+  max_sends_per_day: 8
+  enforce_contact_email: true
+  followup:
+    enabled: false               # Opt in after dry run; independent from initial sending
+    hours: 48
+    delay_type: elapsed          # elapsed or business
+    max_attempts: 2
+    stop_on_any_reply: true
+    never_followup_after_rejection: true
+rocketreach:
+  enabled: true                  # Only makes requests with a real API key
+  max_lookups_per_run: 10
+  require_linkedin_profile: true
+  email_confidence_required: true
+resume:
+  master_pdf: data/master_resume.pdf
+  facts_file: config/resume_facts.yaml
+  preserve_claims: true
+  attachment_filename: 'Nitesh_Bansiwal_Resume_Tailored.pdf'
+tracking:
+  record_events: true
+  record_draft_id: true
+  record_sent_message_and_thread_id: true
+  record_reply_classifications: true

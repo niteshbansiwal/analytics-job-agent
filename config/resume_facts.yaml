@@ -1,0 +1,55 @@
+name: Nitesh Bansiwal
+headline: Data & Analytics Professional | Applied AI and LLM Systems
+education_short: B.Tech, IIT Mandi
+# Preserved from user-provided master resume; edit facts only when source resume changes.
+contact:
+  email: nitesh.bansiwal23@gmail.com
+  phone: '+91 9166689126'
+  linkedin: linkedin.com/in/nitesh-bansiwal
+summary: Applied AI and GenAI Analytics Professional with 8+ years in financial services, telecom, and healthcare. Designs and deploys production GenAI (multi-agent pipelines, RAG, NL-to-SQL) alongside end-to-end analytics in SQL and Python.
+skills:
+  GenAI & LLM: [Multi-agent orchestration, RAG, NL-to-SQL, Speech-to-Text + LLM, Prompt engineering, Tool-calling agents, Guardrails, LLM evaluation]
+  Analytics & Data: [Advanced SQL, Python, R, ETL pipelines, AWS Redshift, Data modelling, Regression, Forecasting]
+  BI & Visualization: [Tableau, Power BI, AWS QuickSight, Dataiku]
+  Domain: [Fraud detection, Revenue & margin optimization, Sales analytics, Dispute resolution]
+  Delivery: [Enterprise LLM deployment, UAT & rollout, Stakeholder management, Adoption]
+experience:
+  - company: American Express
+    location: Gurugram, India
+    dates: Mar 2025 - Present
+    title: Assistant Manager - Finance & Banking Analytics
+    bullets:
+      - Built a multi-agent GenAI dispute resolution system adopted by 900+ consultants - intent routing, RAG over 40+ policy documents, SQL tool-calling agent, and grounded answer generation, at 98-99% UAT accuracy with guardrails; resolution time 45 to 5 minutes across 10,000+ queries a year.
+      - Built a call-compliance pipeline over ~10K sales calls/month - speech-to-text plus LLM review flagging misconduct and product misrepresentation, and coaching gaps; QA coverage increased from ~30% to 100%, with a 10-person listening team replaced by 1-2 reviewers.
+      - Shipped an NL-to-SQL tool letting ops and sales teams query data in plain English using validated SQL.
+      - Automated recurring reporting pipelines with LLM + Python workflows, turning multi-hour manual pulls into on-demand answers.
+      - Automated US SME account distribution across sales teams by lifecycle stage with a real-time ETL workflow.
+      - Redesigned territory mapping using regression-based charge-volume targets, account-tagging and incentive rules for lead assignment and compensation.
+      - Own projects end to end, from scoping to field rollout, while leading a team of 2 analysts.
+  - company: Plivo
+    location: Bengaluru, India
+    dates: Jul 2021 - Dec 2024
+    title: Senior Business Analyst - Finance & CPaaS Analytics
+    bullets:
+      - Cut fraud-investigation overhead 90% with a speech-to-text + LLM voice-fraud pipeline auto-blocking suspicious traffic.
+      - Built an LLM NL-to-SQL engine giving non-technical analysts plain-English access to financial data.
+      - Saved $400K-$450K/year leading an SMS fraud detection tool blocking fraudulent traffic.
+      - Saved $200K-$250K/year automating rate-sheet ingestion across 100+ provider email feeds; cut 15-20 weekly hours.
+      - Grew SMS margins 15% through rate-card revisions, competitive pricing analysis and margin frameworks.
+      - Cut invoice-reconciliation discrepancy from ~4-5% to under 0.5%, saving 10-12 hours/month.
+      - Built dashboards (QuickSight, Power BI, Tableau) via Python, Redshift and Google Sheets integrations.
+  - company: ZS Associates
+    location: Pune, India
+    dates: May 2019 - Jul 2021
+    title: Decision Analytics Associate - Healthcare Consulting
+    bullets:
+      - Cut 70-80 monthly hours to under 2 by leading two teams to consolidate multiple data-vendor feeds into one source of truth.
+      - Improved forecast accuracy to within 2-5% deviation using multivariate regression and feature scaling.
+      - Partnered with pharma stakeholders to define KPIs and build GTN forecasting dashboards in Tableau.
+  - company: Futures First
+    location: Gurugram, India
+    dates: Jul 2018 - May 2019
+    title: Market Analyst - Derivatives & Commodities Trading
+    bullets:
+      - Developed profitable futures-commodities strategies via quantitative analysis; average daily profit $200-$500.
+education: Indian Institute of Technology (IIT), Mandi - B.Tech, Electrical Engineering | 2014 - 2018 | CGPA 7.6 / 10
