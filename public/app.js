@@ -46,7 +46,7 @@ function sheetDialog(){
  if(state.data?.demo){modal('<h2>Spreadsheet import preview</h2><p>The live Atlas workspace accepts Excel and CSV files, validates original job links, and saves contacts to Neon without a paid AI API. This browser-only demo contains fictional data and cannot import real jobs.</p><a class="btn btn-dark" href="/">Go to Atlas sign-in ↗</a>');return;}
  modal(`<h2>Import jobs from ChatGPT</h2>
  <p>Run your scheduled ChatGPT job research, then upload its Excel (.xlsx) or CSV file. Atlas saves real job links, imports up to two potential hiring contacts per job, and skips duplicate URLs. <strong>No OpenAI API key required.</strong></p>
- <p><a class="btn btn-ghost" href="/api/jobs/template.xlsx" download>↓ Download Excel template</a></p>
+ <p><a class="btn btn-ghost" href="/api/spreadsheets/template.xlsx" download>↓ Download Excel template</a></p>
  <form id="sheet-import-form"><label class="form-label">Choose completed Excel or CSV file</label>
  <input class="form-input" type="file" name="file" accept=".xlsx,.csv" required>
  <p class="hint">Maximum 2 MB or 250 rows. Required columns: company, title, post_url. Every job must include a genuine source link.</p>
