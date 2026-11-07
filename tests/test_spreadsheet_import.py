@@ -144,7 +144,7 @@ def test_chatgpt_approved_jobs_sheet_imports_without_manual_reformatting(db):
 
 
 def test_jobs_sheet_with_preamble_and_aliases():
-    parsed = parse_csv('ATLAS approved jobs\\nPrepared,2026-11-08\\n\\nCompany,Role,Job Source URL,Approval\\nAcme,Analytics Manager,https://example.com/jobs/1,Approved\\n')
+    parsed = parse_csv('ATLAS approved jobs\nPrepared,2026-11-08\n\nCompany,Role,Job Source URL,Approval\nAcme,Analytics Manager,https://example.com/jobs/1,Approved\n')
     assert len(parsed) == 1
     assert parsed[0][0] == 5
     assert parsed[0][1]['post_url'] == 'https://example.com/jobs/1'
