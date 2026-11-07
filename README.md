@@ -32,7 +32,7 @@ python -m pytest -q
 | Dashboard | Responsive HTML/CSS/vanilla JS | Job cards, recruiter profiles, outreach queue, analytics, events, settings |
 | API | Python FastAPI | Session cookie restricted to configured Google login in live mode |
 | Database | SQLAlchemy / SQLite locally; PostgreSQL in production | Jobs, contacts, scheduled outreach, encrypted OAuth tokens, events |
-| Search | Serper Google-index API (+ optional OpenAI extraction) | No logged-in LinkedIn scraping; indexed snippets are **not** verified job pages |
+| Search | Two independent engines: Serper public index + OpenAI Responses API web_search | Source-backed URLs required; no logged-in LinkedIn scraping |
 | Contact research | Public LinkedIn-profile index + RocketReach API | Profiles labelled potential unless verified; contacts/emails may be unavailable |
 | Resume tailoring | Fact-locked ReportLab PDF | Reorders actual master-resume achievements to match JD; no invented facts |
 | Gmail | Google OAuth and Gmail REST API | Drafts created on approval, live edits preserved, scheduled send |
@@ -45,7 +45,8 @@ python -m pytest -q
 ## Configuration
 
 - `config/settings.yaml`: schedule, location/title scope, email window, holidays, send cap, follow-up delay and number of attempts.
-- `config/job_scope.md`: the complete user-provided job-search specification.
+- `config/job_scope.md`: the job scope and search constraints.
+- `config/job_search_prompt.md`: your full original job-hunting research prompt, used by the independent ChatGPT web-search engine. You can edit and save a private override from the dashboard.
 - `config/resume_facts.yaml`: approved factual resume content, extracted from `data/master_resume.pdf`.
 - `.env`: credentials, database connection and app secrets (never commit it).
 
@@ -53,10 +54,10 @@ python -m pytest -q
 
 ## Connect services (private live mode)
 
-1. Create a Google Cloud OAuth 2.0 **Web application** client. Enable Gmail API. Add redirect URI exactly `http://localhost:8000/api/auth/google/callback` (for local testing), and later your private HTTPS production URL `/api/auth/google/callback`. Configure Gmail read + compose OAuth scopes. Google may require test users, app verification or other consent configuration before real use.
+1. Create a Google Cloud OAuth 2.0 **Web application** client. Enable Gmail API. Add redirect URI exactly `http://localhost:8000/api/auth/google/callback` (for local testing), and later your private HTTPS production URL `/api/auth/google/callback`. Google sign-in requests only basic identity scopes. Gmail read + compose permissions are requested later through a separate Connect Gmail step. Google may require test users, app verification or other consent configuration before real use.
 2. Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `APP_BASE_URL`, and `ALLOWED_GOOGLE_EMAIL` in `.env`. Generate `SESSION_SECRET` (`python -c "import secrets; print(secrets.token_hex(48))"`) and `TOKEN_ENCRYPTION_KEY` (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`). Do **not** paste secrets into a chat, web frontend or Git repo.
 3. Create your Telegram bot with BotFather. Start a chat with it. Find your private chat ID. Add `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and a random `TELEGRAM_WEBHOOK_SECRET`. For live HTTPS use Telegram `setWebhook` for `https://YOUR-DOMAIN/api/telegram/webhook`, passing the secret token. For local development an HTTPS tunnel may be used *only after securing the endpoint*.
-4. Set `SERPER_API_KEY` to access publicly indexed search results; optional `OPENAI_API_KEY` to extract structured fields from snippets. Search cannot run without Serper. There is **no authorized logged-in LinkedIn scraper** included.
+4. Set `SERPER_API_KEY` for indexed job search and/or `OPENAI_API_KEY` for an independent OpenAI Responses API model with the hosted `web_search` tool. Set `OPENAI_SEARCH_MODEL` (default `gpt-5.6`). The **Find jobs** button runs both configured engines separately, deduplicates stored leads, and never fabricates jobs or contact links. ChatGPT Plus does not include API credits; web-search and model calls have separate usage charges. No logged-in LinkedIn scraper is included.
 5. Add a real `ROCKETREACH_API_KEY` with API entitlement, and verify the provider's current lookup endpoint/response shape against your plan and official API documentation. This integration is scaffolded but not tested with a live account; it may require adjustments.
 6. Set `DATABASE_URL` to a **persistent PostgreSQL** instance for cloud deployment, use `DEMO_MODE=false` and connect with the configured Google account. Gmail OAuth refresh tokens are encrypted before database storage; **keep `TOKEN_ENCRYPTION_KEY` stable** and protect backups.
 7. Test a **single approved job and draft using your own email as the recipient**. Confirm Telegram, edited draft subject/body/attachment, sent message ID and reply stop behavior. Only **after** you explicitly authorize live dispatch set `email.scheduled_sending_enabled: true` in `config/settings.yaml`. Separately opt into `email.followup.enabled: true` after a verified dry run.
@@ -87,9 +88,9 @@ Cloud functions have request-time limits. For production loads, split discovery,
 
 ## Known limitations
 
-- Live-job source results require Serper; **no real postings are included in the demo**. Direct full-JD retrieval, exact original post dates, poster identity and true hiring relationships often cannot be reliably extracted from public search snippets alone.
+- Live-job discovery requires Serper and/or an OpenAI API key with web-search access; **no real postings are included in the demo**. The AI search engine accepts only job URLs surfaced in its web-search sources, but it still cannot guarantee an opening is current or that a person is the actual hiring manager. Direct full-JD retrieval, exact original post dates, poster identity and true hiring relationships often cannot be reliably extracted from public search snippets alone.
 - Contact search provides potential leads and RocketReach enrichment when configured; two named people and exact emails cannot be guaranteed for each job.
 - RocketReach API integration is unverified against your specific plan; the endpoint/parameters may need updating.
 - Outlook/WhatsApp integrations and automatic applications on external hiring sites are not implemented.
 - Resume tailoring is **conservative re-ranking of truthful bullets**, not deep AI rewriting; visual formatting differs from the uploaded master PDF.
-- No persistent hosted preview or GitHub repository is created by downloading this ZIP.
+- Hosted homepage is at `/` and safe browser-only preview is at `/preview.html`; the authenticated workspace is at `/app`. Production use requires Google OAuth, persistent PostgreSQL and real search API credentials.
