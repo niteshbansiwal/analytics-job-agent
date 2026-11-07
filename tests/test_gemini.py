@@ -45,7 +45,7 @@ def test_gemini_invalid_response_falls_back_without_inventing_facts(monkeypatch)
     assert result['mode'] == 'facts_only_fallback'
     assert result['selected_fact_ids'] == ['amex_sme', 'plivo_margin', 'dashboards']
     assert 'made_up_experience' not in result['body']
-    assert '15% improvement' in result['body']
+    assert '15%' in result['body'] and 'Plivo' in result['body']
     assert result['warning']
 
 
