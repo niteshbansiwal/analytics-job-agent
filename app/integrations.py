@@ -24,11 +24,15 @@ def encryption():
         raise RuntimeError('TOKEN_ENCRYPTION_KEY must be configured for Gmail OAuth')
     return Fernet(secret.encode())
 
-def google_oauth_url(state: str):
+def google_oauth_url(state: str, *, gmail: bool = False):
+    """Use least-privilege Google login; ask for Gmail access separately."""
+    scopes = GOOGLE_SCOPES if gmail else ['openid', 'email', 'profile']
     params = dict(client_id=env('GOOGLE_CLIENT_ID'), response_type='code',
                   redirect_uri=env('APP_BASE_URL').rstrip('/') + '/api/auth/google/callback',
-                  scope=' '.join(GOOGLE_SCOPES), state=state, access_type='offline',
-                  prompt='consent', include_granted_scopes='true')
+                  scope=' '.join(scopes), state=state,
+                  access_type='offline' if gmail else 'online',
+                  prompt='consent' if gmail else 'select_account',
+                  include_granted_scopes='true')
     return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode(params)
 
 def google_code_exchange(code: str):
