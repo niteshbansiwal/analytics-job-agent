@@ -77,8 +77,15 @@ def validate_bullet_selection(selection: dict | None, info: dict) -> dict[int, l
     return chosen
 
 
-def tailored_pdf(jd: str, title: str = '', *, selected_bullets: dict | None = None) -> bytes:
-    """Conservative tailoring: factual bullets unchanged; reorder skills and bullets by JD relevance."""
+def tailored_pdf(jd: str, title: str = '', *, selected_bullets: dict | None = None,
+                 master_pdf: bytes | None = None) -> bytes:
+    """Use the exact approved PDF in live mode; demo retains its legacy generator."""
+    if master_pdf is not None:
+        from .resume_master import render_master
+        return render_master(master_pdf, selected_bullets)
+    from .config import demo_mode
+    if not demo_mode():
+        raise ValueError('Upload the approved original resume PDF in Configuration before generating outreach.')
     info = resume_facts()
     terms = keywords(jd + ' ' + title)
     chosen = validate_bullet_selection(selected_bullets, info)
