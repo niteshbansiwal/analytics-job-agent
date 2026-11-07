@@ -105,46 +105,88 @@ def preview():
 @app.get('/')
 def index():
     if os.getenv('VERCEL'):
-        return RedirectResponse('/preview.html', status_code=307)
+        return RedirectResponse('/welcome.html', status_code=307)
+    return FileResponse(ROOT / 'public' / 'welcome.html', media_type='text/html')
+
+@app.get('/app')
+def workspace():
+    if os.getenv('VERCEL'):
+        return RedirectResponse('/index.html', status_code=307)
     return FileResponse(ROOT / 'public' / 'index.html', media_type='text/html')
 
 @app.get('/api/health')
 def health():
     return {'ok': True, 'demo': demo_mode(), 'version': '0.1.0'}
 
+@app.get('/api/auth/status')
+def auth_status(request: Request):
+    google_ready = all([env('GOOGLE_CLIENT_ID'), env('GOOGLE_CLIENT_SECRET'),
+                        env('APP_BASE_URL'), env('ALLOWED_GOOGLE_EMAIL')]) and len(env('SESSION_SECRET')) >= 32
+    database_configured = bool(env('DATABASE_URL').startswith(('postgres://', 'postgresql://', 'postgresql+psycopg://')))
+    return {
+        'signed_in': bool(check_session(request.cookies.get('job_agent_session', ''))),
+        'google_ready': bool(google_ready),
+        'database_configured': database_configured,
+        'search_configured': bool(env('SERPER_API_KEY')),
+        'gmail_oauth_configured': bool(google_ready and env('TOKEN_ENCRYPTION_KEY') and database_configured),
+        'send_enabled': False,  # Live sending is safety-locked until independently enabled.
+        'demo_available': True,
+    }
+
+def start_google_oauth(*, gmail: bool = False):
+    if not all([env('GOOGLE_CLIENT_ID'), env('GOOGLE_CLIENT_SECRET'), env('APP_BASE_URL'),
+                env('ALLOWED_GOOGLE_EMAIL')]) or len(env('SESSION_SECRET')) < 32:
+        raise HTTPException(503, 'Google sign-in is not configured. See the homepage setup checklist.')
+    state = secrets.token_urlsafe(32)
+    response = RedirectResponse(google_oauth_url(state, gmail=gmail), status_code=302)
+    response.set_cookie('oauth_state', state, httponly=True, secure=is_https(), samesite='lax', max_age=600)
+    response.set_cookie('oauth_flow', 'gmail' if gmail else 'login',
+                        httponly=True, secure=is_https(), samesite='lax', max_age=600)
+    return response
+
 @app.get('/api/auth/google/start')
 def google_auth_start():
-    if not all([env('GOOGLE_CLIENT_ID'), env('GOOGLE_CLIENT_SECRET'), env('APP_BASE_URL'), env('ALLOWED_GOOGLE_EMAIL')]):
-        raise HTTPException(400, 'Google OAuth is not configured; see .env.example')
-    state = secrets.token_urlsafe(32)
-    response = RedirectResponse(google_oauth_url(state), status_code=302)
-    response.set_cookie('oauth_state', state, httponly=True, secure=is_https(), samesite='lax', max_age=600)
-    return response
+    return start_google_oauth(gmail=False)
+
+@app.get('/api/auth/gmail/start')
+def gmail_auth_start(user: str = Depends(owner)):
+    if demo_mode():
+        raise HTTPException(409, 'Gmail integration is unavailable in demo mode.')
+    if not env('DATABASE_URL') or not env('TOKEN_ENCRYPTION_KEY'):
+        raise HTTPException(503, 'Configure PostgreSQL and TOKEN_ENCRYPTION_KEY before connecting Gmail.')
+    return start_google_oauth(gmail=True)
 
 @app.get('/api/auth/google/callback')
 def google_auth_callback(request: Request, code: str = '', state: str = ''):
     expected = request.cookies.get('oauth_state', '')
-    if not expected or not hmac.compare_digest(expected, state) or not code:
-        raise HTTPException(400, 'OAuth state validation failed')
-    if demo_mode():
-        raise HTTPException(400, 'Disable DEMO_MODE before connecting live Gmail')
+    mode = request.cookies.get('oauth_flow', 'login')
+    if not expected or not hmac.compare_digest(expected, state) or not code or mode not in ('login', 'gmail'):
+        raise HTTPException(400, 'OAuth state validation failed. Please try signing in again.')
     try:
         result = google_code_exchange(code)
         account = google_userinfo(result['access_token'])
         email = account.get('email', '').lower()
         if not account.get('email_verified') or email != env('ALLOWED_GOOGLE_EMAIL').lower():
-            raise HTTPException(403, 'This Google account is not the configured app owner')
-        with session() as db:
-            refresh = result.get('refresh_token')
-            if not refresh and not db.get(Integration, 'gmail'):
-                raise HTTPException(400, 'Google did not issue a refresh token. Reconnect with consent.')
-            if refresh:
-                save_google_refresh(db, email, refresh)
-            log(db, 'gmail_connected', owner=email)
-        response = RedirectResponse('/?connected=gmail', status_code=302)
+            raise HTTPException(403, 'This Google account is not the configured workspace owner.')
+        if mode == 'gmail':
+            if check_session(request.cookies.get('job_agent_session', '')) != email:
+                raise HTTPException(403, 'Sign in before connecting Gmail.')
+            if demo_mode():
+                raise HTTPException(409, 'Disable demo mode before connecting Gmail.')
+            with session() as db:
+                refresh = result.get('refresh_token')
+                if not refresh and not db.get(Integration, 'gmail'):
+                    raise HTTPException(400, 'Google did not issue a refresh token. Reconnect with consent.')
+                if refresh:
+                    save_google_refresh(db, email, refresh)
+                log(db, 'gmail_connected', owner=email)
+            response = RedirectResponse('/app?connected=gmail', status_code=302)
+        else:
+            response = RedirectResponse('/app', status_code=302)
         response.set_cookie('job_agent_session', create_session(email), httponly=True,
                             secure=is_https(), samesite='lax', max_age=7*86400)
         response.delete_cookie('oauth_state')
+        response.delete_cookie('oauth_flow')
         return response
     except HTTPException:
         raise
@@ -159,6 +201,8 @@ def logout():
 
 @app.get('/api/overview')
 def overview(user: str = Depends(owner)):
+    if os.getenv('VERCEL') and not env('DATABASE_URL'):
+        raise HTTPException(503, 'PostgreSQL DATABASE_URL is not configured yet. See the homepage setup checklist.')
     with session() as db:
         seed_demo(db)
         db.flush()
