@@ -437,14 +437,20 @@ class SearchPromptUpdate(BaseModel):
 def get_search_prompt(user: str = Depends(owner)):
     from .agentic_search import master_prompt
     with session() as db:
-        prompt = get_kv(db, 'search_prompt_override') or master_prompt()
-    return {'prompt': prompt, 'editable': True, 'source': 'user master prompt'}
+        override = get_kv(db, 'scheduled_prompt_override')
+    output_contract = (ROOT / 'config' / 'scheduled_chatgpt_csv_prompt.md').read_text(encoding='utf-8')
+    prompt = override or (master_prompt() + '\n\n---\n\n'
+        + 'IMPORTANT: The following Excel/CSV output contract overrides the presentation '
+          'format in the master prompt above. Use the candidate profile and research '
+          'standards in the master prompt; produce only the structured spreadsheet/CSV.\n\n'
+        + output_contract)
+    return {'prompt': prompt, 'editable': True, 'source': 'master research prompt + Excel/CSV output contract'}
 
 
 @app.put('/api/search/prompt')
 def update_search_prompt(data: SearchPromptUpdate, user: str = Depends(owner)):
     with session() as db:
-        set_kv(db, 'search_prompt_override', data.prompt.strip())
+        set_kv(db, 'scheduled_prompt_override', data.prompt.strip())
         log(db, 'search_prompt_updated', length=len(data.prompt))
     return {'saved': True, 'characters': len(data.prompt)}
 
@@ -490,7 +496,7 @@ def cron_tick(request: Request):
         sending = send_due(db)
         last_day = get_kv(db, 'last_search_ist_date')
         search = {'skipped': True}
-        if daily_search_due(now(), last_day):
+        if daily_search_due(now(), last_day) and env('SERPER_API_KEY'):
             try:
                 search = discover(db)
                 if not search['errors'] or search['created']:
