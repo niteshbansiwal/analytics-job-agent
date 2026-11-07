@@ -25,7 +25,8 @@ from .discovery import discover, research_contacts
 from .workflow import approve_job, prepare_outreach, cancel_outreach, monitor_replies, send_due
 
 app = FastAPI(title='Analytics Job Agent', version='0.1.0', docs_url=None, redoc_url=None)
-app.mount('/assets', StaticFiles(directory=str(ROOT / 'public')), name='assets')
+if (ROOT / 'public').is_dir():
+    app.mount('/assets', StaticFiles(directory=str(ROOT / 'public')), name='assets')
 
 def is_https():
     return env('APP_BASE_URL').startswith('https://')
@@ -97,10 +98,14 @@ def json_outreach(row: Outreach | None):
 
 @app.get('/preview')
 def preview():
+    if os.getenv('VERCEL'):
+        return RedirectResponse('/preview.html', status_code=307)
     return FileResponse(ROOT / 'public' / 'preview.html', media_type='text/html')
 
 @app.get('/')
 def index():
+    if os.getenv('VERCEL'):
+        return RedirectResponse('/preview.html', status_code=307)
     return FileResponse(ROOT / 'public' / 'index.html', media_type='text/html')
 
 @app.get('/api/health')
