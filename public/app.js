@@ -41,14 +41,60 @@ function settingsPanel(){const d=state.data,i=d.integrations,s=d.settings;const 
 function modal(html){$('modal-inner').innerHTML=html;$('form-dialog').showModal()}
 function closeModal(){$('form-dialog').close()}
 function importDialog(){modal(`<h2>Add a job posting</h2><p>Paste a real job link and the information visible on the page. Imported records are marked unverified until investigated.</p><form id="import-form"><label class="form-label">Company *</label><input class="form-input" name="company" required maxlength="180" placeholder="Company name"><label class="form-label">Job title *</label><input class="form-input" name="title" required maxlength="220" placeholder="Analytics Manager"><label class="form-label">Original post URL *</label><input class="form-input" name="post_url" type="url" pattern="https://.*" required placeholder="https://..."><label class="form-label">Location</label><input class="form-input" name="location" placeholder="Gurugram"><label class="form-label">Job description (optional)</label><textarea class="form-input form-textarea" name="jd" maxlength="6000" placeholder="Paste job description..."></textarea><button class="btn btn-dark" type="submit">Add to pipeline ↗</button></form>`)}
+
+function sheetDialog(){
+ modal(`<h2>Import jobs from ChatGPT</h2>
+ <p>Run your scheduled ChatGPT job research, then upload its Excel (.xlsx) or CSV file. Atlas saves real job links, imports up to two potential hiring contacts per job, and skips duplicate URLs. <strong>No OpenAI API key required.</strong></p>
+ <p><a class="btn btn-ghost" href="/api/jobs/template.xlsx" download>↓ Download Excel template</a></p>
+ <form id="sheet-import-form"><label class="form-label">Choose completed Excel or CSV file</label>
+ <input class="form-input" type="file" name="file" accept=".xlsx,.csv" required>
+ <p class="hint">Maximum 2 MB or 250 rows. Required columns: company, title, post_url. Every job must include a genuine source link.</p>
+ <button class="btn btn-dark" type="submit">Import and validate jobs ↗</button></form>
+ <div style="border-top:1px solid #e5ebf2;margin:22px 0 18px"></div>
+ <h3>Or paste CSV directly</h3><p>Useful if a scheduled task provides CSV text instead of an attached spreadsheet.</p>
+ <form id="csv-import-form"><textarea class="form-input form-textarea" name="csv_text" rows="5" maxlength="400000" required placeholder="company,title,location,post_url,..."></textarea>
+ <button class="btn btn-ghost" type="submit" style="margin-top:10px">Import pasted CSV ↗</button></form>
+ <p class="hint">Imported posting dates, job details and hiring relationships are marked unverified until you check the original sources. Import never sends emails.</p>`);
+}
+function sheetResult(result){
+ const details=(result.errors||[]).slice(0,20).map(e=>'<li>'+escapeHtml(e)+'</li>').join('');
+ modal(`<h2>Import complete</h2><p><strong>${result.created} new jobs</strong> saved in Atlas. ${result.duplicates} duplicate links skipped; ${result.skipped} invalid rows skipped; ${result.contacts_created} potential hiring contacts imported.</p>
+ ${details?'<p>Items to review:</p><ul style="max-height:220px;overflow:auto">'+details+'</ul>':''}
+ <p class="hint">Every imported job remains unverified until you inspect its original posting. No emails were sent.</p>
+ <button class="btn btn-dark" type="button" id="import-done">View imported jobs ↗</button>`);
+}
+async function handleSheetSubmit(form){
+ const submit=form.querySelector('button[type="submit"]');
+ submit.disabled=true;
+ try{
+  let result;
+  if(form.id==='sheet-import-form'){
+   const file=form.querySelector('input[type="file"]').files[0];
+   if(!file)throw Error('Select a spreadsheet first.');
+   if(file.size>2000000)throw Error('File must be 2 MB or smaller.');
+   const response=await fetch('/api/jobs/import-spreadsheet',{method:'POST',body:new FormData(form),credentials:'same-origin'});
+   result=await response.json().catch(()=>({detail:'Unexpected server response'}));
+   if(!response.ok)throw Error(result.detail||'Spreadsheet upload failed.');
+  }else{
+   result=await api('/api/jobs/import-csv',{method:'POST',body:JSON.stringify({csv_text:form.querySelector('textarea').value})});
+  }
+  await load();
+  sheetResult(result);
+  toast(result.created+' jobs imported; '+result.duplicates+' duplicates skipped');
+ }catch(err){toast(err.message,true)}
+ finally{submit.disabled=false}
+}
+
 async function promptDialog(){
  try{
   const result=await api('/api/search/prompt');
-  modal('<h2>Your job-search research prompt</h2><p>This prompt is used by the independent ChatGPT web-search engine. The Serper API engine still runs separately. Changes are saved to your private workspace.</p><form id="prompt-form"><label class="form-label">Research instructions</label><textarea class="form-input form-textarea" name="prompt" rows="17" minlength="100" maxlength="24000" required style="min-height:300px;width:100%;resize:vertical">'+escapeHtml(result.prompt)+'</textarea><p class="hint">Search engine sources must be cited. No vacancy, date or contact should be invented.</p><button class="btn btn-dark" type="submit">Save search prompt ↗</button></form>');
+  modal('<h2>Your job-search research prompt</h2><p>Copy this research brief into your scheduled ChatGPT task. Editing it here saves a copy in Atlas but does not automatically update your ChatGPT task.</p><form id="prompt-form"><label class="form-label">Research instructions</label><textarea class="form-input form-textarea" name="prompt" rows="17" minlength="100" maxlength="24000" required style="min-height:300px;width:100%;resize:vertical">'+escapeHtml(result.prompt)+'</textarea><p class="hint">Search engine sources must be cited. No vacancy, date or contact should be invented.</p><button class="btn btn-ghost" type="button" id="copy-research-prompt">Copy prompt for scheduled ChatGPT task</button> <button class="btn btn-dark" type="submit">Save prompt copy ↗</button></form>');
  }catch(err){toast(err.message,true)}
 }
 function contactDialog(id){modal(`<h2>Add hiring-side contact</h2><p>Only add a person whose identity you can support with an original post or professional profile. Email is optional.</p><form id="contact-form" data-jobid="${id}"><label class="form-label">Name *</label><input class="form-input" name="name" required placeholder="Contact's verified name"><label class="form-label">Current role</label><input class="form-input" name="title" placeholder="Talent Acquisition / Director of Analytics"><label class="form-label">LinkedIn profile URL</label><input class="form-input" name="linkedin_url" type="url" placeholder="https://www.linkedin.com/in/..."><label class="form-label">Professional email (optional)</label><input class="form-input" name="email" type="email" placeholder="Only a genuinely sourced address"><label class="form-label">Evidence URL</label><input class="form-input" name="evidence_url" type="url" placeholder="Link to job announcement/profile"><button type="submit" class="btn btn-dark">Save contact</button></form>`)}
 async function mutate(path){try{await api(path,{method:'POST'});await load();toast('Updated successfully.')}catch(e){toast(e.message,true)}}
+document.addEventListener('submit',async e=>{if(['sheet-import-form','csv-import-form'].includes(e.target.id)){e.preventDefault();await handleSheetSubmit(e.target)}});
+document.addEventListener('click',e=>{if(e.target.closest('#import-done')){closeModal();setPage('jobs')}if(e.target.closest('#copy-research-prompt')){const value=document.querySelector('#prompt-form textarea')?.value||'';navigator.clipboard.writeText(value).then(()=>toast('Prompt copied. Paste it into your scheduled ChatGPT task.')).catch(()=>toast('Copy failed. Select the text and copy manually.',true));}});
 document.addEventListener('click',async e=>{
  const btn=e.target.closest('[data-page],[data-filter],[data-job],[data-action]');if(!btn)return;
  if(btn.dataset.page){setPage(btn.dataset.page);return}
@@ -68,23 +114,5 @@ document.addEventListener('input',e=>{if(e.target.id==='job-search'){state.searc
 document.addEventListener('submit',async e=>{if(!['import-form','contact-form','prompt-form'].includes(e.target.id))return;e.preventDefault();const form=e.target;const payload=Object.fromEntries(new FormData(form).entries());try{if(form.id==='prompt-form'){await api('/api/search/prompt',{method:'PUT',body:JSON.stringify(payload)});closeModal();toast('Research prompt saved for ChatGPT web search');return}const path=form.id==='import-form'?'/api/jobs/import':`/api/jobs/${form.dataset.jobid}/contacts`;await api(path,{method:'POST',body:JSON.stringify(payload)});closeModal();await load();toast(form.id==='import-form'?'Job added to pipeline':'Contact saved')}catch(err){toast(err.message,true)}});
 $('close-dialog').onclick=closeModal;$('toggle-menu').onclick=()=> $('app-shell').classList.toggle('open');
 if($('edit-search-prompt')) $('edit-search-prompt').onclick=promptDialog;
-$('search-now').onclick=async()=>{
- if(state.data?.demo){toast('Demo mode: live job discovery is disabled. Test the sample approval flow instead.',true);return}
- const engines=[['api',state.data?.integrations.serper],['chatgpt',state.data?.integrations.openai]].filter(x=>x[1]).map(x=>x[0]);
- if(!engines.length){toast('Configure Serper or an OpenAI API key before searching.',true);return}
- const button=$('search-now'),note=$('run-note');button.disabled=true;
- let found=0,errors=[];
- try{
-  for(const engine of engines){
-   note.textContent=engine==='api'?'Searching indexed hiring posts…':'ChatGPT independently researching the web…';
-   try{
-    const result=await api('/api/discover',{method:'POST',body:JSON.stringify({engine})});
-    found+=result.created||0;
-    if(result.errors?.length)errors.push(engine+': '+result.errors.slice(0,2).join('; '));
-   }catch(e){errors.push(engine+': '+e.message)}
-  }
-  await load();
-  toast('Search finished: '+found+' new sourced job leads'+(errors.length?'; issues: '+errors.join(' | '):''));
- }finally{button.disabled=false;note.textContent='API + ChatGPT web research · Saved master prompt'}
-};
+$('import-sheet').onclick=sheetDialog;
 load();
