@@ -277,10 +277,149 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         name = next((c.name for c in contacts if c.email), '') or (
             contacts[0].name if contacts else '')
         result = build_email_preview(job.company, job.title, job.jd or '', name)
+        from .resume import resume_selection
+        result['resume'] = resume_selection(job.jd or '', job.title, result['selected_fact_ids'])
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
             draft_created=False, email_sent=False)
         return result
+
+
+class ResumePreviewInput(BaseModel):
+    selected_bullets: dict[str, list[int]]
+
+
+@app.post('/api/jobs/{job_id}/reviewed-resume.pdf')
+def reviewed_resume_pdf(job_id: str, data: ResumePreviewInput,
+                        user: str = Depends(owner)):
+    """Preview exactly the source-resume bullets selected by the owner."""
+    from .resume import tailored_pdf
+    with session() as db:
+        job = db.get(Job, job_id)
+        if not job or job.is_demo:
+            raise HTTPException(404, 'Imported job not found.')
+        try:
+            pdf = tailored_pdf(job.jd or '', job.title,
+                               selected_bullets=data.selected_bullets)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        if not pdf.startswith(b'%PDF'):
+            raise HTTPException(500, 'Resume generation failed.')
+        from io import BytesIO
+        return StreamingResponse(BytesIO(pdf), media_type='application/pdf',
+                                 headers={'Content-Disposition': 'inline; filename="Atlas_Reviewed_Resume.pdf"',
+                                          'Cache-Control': 'no-store'})
+
+
+class ReviewedDraftInput(BaseModel):
+    contact_id: str = Field(min_length=1, max_length=36)
+    recipient_email: str = Field(min_length=5, max_length=200)
+    subject: str = Field(min_length=3, max_length=200)
+    body: str = Field(min_length=30, max_length=8000)
+    selected_bullets: dict[str, list[int]]
+    reviewed: bool = False
+    replace_existing_draft: bool = False
+
+
+@app.post('/api/jobs/{job_id}/reviewed-draft')
+def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
+                          user: str = Depends(owner)):
+    """Owner-confirmed Gmail draft + verified PDF. Never sends or schedules."""
+    if demo_mode():
+        raise HTTPException(409, 'Real Gmail drafts are unavailable in demo mode.')
+    if not data.reviewed:
+        raise HTTPException(422, 'Review and confirm the email, recipient and resume first.')
+    if ('\n' in data.subject or '\r' in data.subject
+            or not data.subject.strip() or not data.body.strip()):
+        raise HTTPException(422, 'Subject or email body is invalid.')
+    from .resume import tailored_pdf
+    from .integrations import (gmail_create_draft, gmail_update_draft,
+                               gmail_get_draft, inspect_gmail_draft,
+                               gmail_delete_draft)
+    with session() as db:
+        job = db.get(Job, job_id)
+        if not job or job.is_demo:
+            raise HTTPException(404, 'Imported job not found.')
+        if job.status == 'rejected':
+            raise HTTPException(409, 'Rejected job: reopen it before preparing outreach.')
+        if not job.post_url.startswith('https://'):
+            raise HTTPException(409, 'Review and add a real HTTPS job source before outreach.')
+        if not db.get(Integration, 'gmail'):
+            raise HTTPException(409, 'Gmail is not connected. Connect it in Configuration.')
+        contact = db.get(Contact, data.contact_id)
+        if not contact or contact.job_id != job.id or not contact.email:
+            raise HTTPException(422, 'Select a contact with a professional email for this job.')
+        if (contact.email.strip().lower() != data.recipient_email.strip().lower()
+                or '@' not in contact.email or '\n' in contact.email or '\r' in contact.email):
+            raise HTTPException(409, 'Contact email changed. Refresh and review the recipient.')
+        row = db.execute(select(Outreach).where(Outreach.job_id == job.id)).scalar_one_or_none()
+        if row and row.status in ('sent', 'sending', 'awaiting_reply',
+                                  'followup_scheduled', 'responded', 'finished'):
+            raise HTTPException(409, 'This job already has sent or active outreach; no duplicate draft created.')
+        if row and row.gmail_draft_id and not data.replace_existing_draft:
+            raise HTTPException(409, 'Existing Gmail draft: confirm replacement before overwriting its edits.')
+        try:
+            pdf = tailored_pdf(job.jd or '', job.title,
+                               selected_bullets=data.selected_bullets)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        if not pdf.startswith(b'%PDF'):
+            raise HTTPException(500, 'Generated resume was not a valid PDF.')
+        filename = settings()['resume']['attachment_filename']
+        draft_id = row.gmail_draft_id if row else ''
+        created_new = not bool(draft_id)
+        try:
+            if draft_id:
+                draft = gmail_update_draft(db, draft_id, contact.email, data.subject,
+                                           data.body, pdf, filename)
+            else:
+                draft = gmail_create_draft(db, contact.email, data.subject,
+                                           data.body, pdf, filename)
+            verified_id = draft.get('id', '')
+            if not verified_id or (draft_id and verified_id != draft_id):
+                raise RuntimeError('Gmail returned an unexpected draft identifier.')
+            draft_id = verified_id
+            verified = inspect_gmail_draft(gmail_get_draft(db, draft_id))
+            if (verified['to'].lower() != contact.email.lower()
+                    or verified['subject'] != data.subject
+                    or verified['attachment_count'] != 1
+                    or verified['attachment_filenames'] != [filename]
+                    or verified['body'].strip().replace('\r\n', '\n')
+                       != data.body.strip().replace('\r\n', '\n')):
+                raise RuntimeError('Gmail draft verification mismatch; review in Gmail.')
+        except Exception as exc:
+            if created_new and draft_id:
+                try:
+                    gmail_delete_draft(db, draft_id)
+                except Exception:
+                    pass
+            detail = (f'Gmail API returned HTTP {exc.response.status_code}'
+                      if isinstance(exc, httpx.HTTPStatusError)
+                      else type(exc).__name__)
+            raise HTTPException(502, f'Gmail draft creation/verification failed: {detail}. No email sent.')
+        if not row:
+            row = Outreach(job_id=job.id)
+            db.add(row)
+        row.contact_id = contact.id
+        row.to_email = contact.email
+        row.subject = data.subject
+        row.body = data.body
+        row.resume_b64 = base64.b64encode(pdf).decode()
+        row.resume_name = filename
+        row.gmail_draft_id = draft_id
+        row.status = 'draft_ready'  # Never eligible for automatic send_due.
+        row.due_at = None
+        row.error = ''
+        job.status = 'approved'
+        db.flush()
+        log(db, 'reviewed_gmail_draft_verified', job.id, row.id,
+            gmail_draft_id=draft_id, recipient=contact.email,
+            selected_bullets=data.selected_bullets, sent=False)
+        return {'verified': True, 'sent': False, 'scheduled': False,
+                'draft_id': draft_id, 'resume_filename': filename,
+                'recipient_email': contact.email,
+                'gmail_url': 'https://mail.google.com/mail/u/0/#drafts',
+                'outreach': json_outreach(row)}
 
 
 @app.get('/api/jobs/{job_id}')
