@@ -95,6 +95,10 @@ def json_outreach(row: Outreach | None):
                       'due_at', 'sent_at', 'last_reply_at', 'last_reply_class',
                       'followup_count', 'error', 'created_at']}
 
+@app.get('/preview')
+def preview():
+    return FileResponse(ROOT / 'public' / 'preview.html', media_type='text/html')
+
 @app.get('/')
 def index():
     return FileResponse(ROOT / 'public' / 'index.html', media_type='text/html')
