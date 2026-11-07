@@ -63,6 +63,102 @@ def test_check_status_array_result():
     assert result['provider_id'] == '789'
 
 
+
+def test_complete_without_email_is_provisional_when_provider_id_exists():
+    result = _rocketreach_email_result({
+        'id': 456, 'status': 'complete', 'linkedin_url': LINKEDIN, 'emails': [],
+    }, LINKEDIN)
+    assert result['status'] == 'awaiting_email'
+    assert result['provider_id'] == '456'
+
+
+def test_completed_nested_profile_email_and_check_status_envelope():
+    result = _rocketreach_email_result({
+        'status': 'success',
+        'people': [{'id': 456, 'status': 'complete', 'linkedin_url': LINKEDIN,
+                    'email': {'address': 'jane@company.com', 'type': 'work'}}],
+    }, LINKEDIN)
+    assert result['status'] == 'returned'
+    assert result['email'] == 'jane@company.com'
+
+
+def test_second_click_reuses_provider_id_and_check_finds_email(monkeypatch):
+    import json
+    from contextlib import contextmanager
+    from app import main
+    from app.db import set_kv
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        job = Job(company='Example Payments', title='Manager Analytics',
+                  source='test', post_url='https://example.com/jobs/1')
+        db.add(job)
+        db.flush()
+        contact = Contact(job_id=job.id, name='Jane Analyst', linkedin_url=LINKEDIN)
+        db.add(contact)
+        db.flush()
+
+        @contextmanager
+        def db_session():
+            yield db
+
+        counts = {'lookup': 0, 'check': 0}
+
+        def lookup(url):
+            counts['lookup'] += 1
+            return {'status': 'awaiting_email', 'provider_id': '456'}
+
+        def check(pid, url):
+            counts['check'] += 1
+            assert pid == '456'
+            return {'status': 'returned', 'provider_id': '456',
+                    'email': 'jane@company.com',
+                    'email_status': 'rocketreach_unverified'}
+
+        monkeypatch.setattr(main, 'session', db_session)
+        monkeypatch.setattr(main, 'demo_mode', lambda: False)
+        monkeypatch.setattr(main, 'env', lambda key: 'test-key')
+        monkeypatch.setattr(main, 'rocketreach_lookup', lookup)
+        monkeypatch.setattr(main, 'rocketreach_check_status', check)
+        first = main.lookup_contact_email(contact.id, main.RocketReachLookupInput(), user='owner')
+        assert first['status'] == 'awaiting_email'
+        again = main.lookup_contact_email(contact.id, main.RocketReachLookupInput(), user='owner')
+        assert again['status'] == 'awaiting_email'
+        assert counts['lookup'] == 1
+        # Simulate the backoff time passing, without sleeping or real API calls.
+        state = main._rocketreach_state(db, contact.id)
+        state['next_check_at'] = '2020-01-01T00:00:00+00:00'
+        set_kv(db, 'rocketreach:' + contact.id, json.dumps(state))
+        completed = main.check_contact_lookup(contact.id, user='owner')
+        assert completed['status'] == 'returned'
+        assert completed['email'] == 'jane@company.com'
+        assert counts == {'lookup': 1, 'check': 1}
+        assert contact.email == 'jane@company.com'
+    engine.dispose()
+
+
+def test_three_empty_status_checks_finalize_without_paid_retry():
+    from app.main import _save_rocketreach_result, _rocketreach_state
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        job = Job(company='Example Payments', title='Manager Analytics',
+                  source='test', post_url='https://example.com/jobs/1')
+        db.add(job)
+        db.flush()
+        contact = Contact(job_id=job.id, name='Jane Analyst', linkedin_url=LINKEDIN)
+        db.add(contact)
+        db.flush()
+        first = _save_rocketreach_result(db, contact, {'status': 'awaiting_email', 'provider_id': '456'})
+        assert first['status'] == 'awaiting_email'
+        for n in range(1, 4):
+            result = _save_rocketreach_result(db, contact,
+                {'status': 'awaiting_email', 'provider_id': '456'}, is_check=True)
+            assert result['status'] == ('not_found' if n == 3 else 'awaiting_email')
+        assert _rocketreach_state(db, contact.id)['lookup_count'] == 1
+        assert _rocketreach_state(db, contact.id)['check_count'] == 3
+    engine.dispose()
+
 def test_lookup_state_persists_and_contact_email_only_on_completion():
     engine = create_engine('sqlite://')
     Base.metadata.create_all(engine)
