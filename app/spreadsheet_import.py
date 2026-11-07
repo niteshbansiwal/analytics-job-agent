@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from .db import Job, Contact, log
 from .discovery import canonical, ranking, source_type
+from .duplicates import possible_matches
 
 MAX_FILE_BYTES = 2_000_000
 MAX_ROWS = 250
@@ -183,6 +184,7 @@ def parse_file(data: bytes, filename: str):
 def import_rows(db, rows):
     created, duplicates, skipped, contacts_created = 0, 0, 0, 0
     errors, ids, seen = [], [], set()
+    possible_duplicates, duplicate_candidates = 0, []
     for number, item in rows:
         company = item.get('company', '').strip()[:180]
         title = item.get('title', '').strip()[:220]
@@ -195,11 +197,17 @@ def import_rows(db, rows):
             duplicates += 1
             continue
         seen.add(url)
-        old = db.execute(select(Job).where(Job.post_url == url)).scalars().first()
-        if old:
+        location = item.get('location', '').strip()[:180] or 'Not stated'
+        exact, candidates = possible_matches(
+            db, company=company, title=title, location=location,
+            post_url=url, apply_url=item.get('apply_url', ''))
+        if exact:
             duplicates += 1
             continue
-        location = item.get('location', '').strip()[:180] or 'Not stated'
+        if candidates:
+            possible_duplicates += 1
+            duplicate_candidates.append({'row': number, 'company': company,
+                                         'title': title, 'matches': candidates})
         jd = item.get('jd', '').strip()[:6000]
         score, why, gaps = ranking(company, title, location, jd, url)
         research_note = item.get('fit_why', '').strip()[:600]
@@ -218,7 +226,8 @@ def import_rows(db, rows):
             author_name=item.get('author_name', '').strip()[:150], author_url=author_url,
             jd=jd, fit_score=score, fit_why=why, gaps=gaps,
             verification='chatgpt_spreadsheet_unverified',
-            leadership='Manager title; duties unverified', status='discovered',
+            leadership='Manager title; duties unverified',
+            status='duplicate_review' if candidates else 'discovered',
         )
         db.add(job)
         db.flush()
@@ -226,6 +235,9 @@ def import_rows(db, rows):
         created += 1
         log(db, 'job_spreadsheet_imported', job.id, source_url=url, row=number,
             research_source=item.get('source', '')[:150], evidence='owner_uploaded_spreadsheet')
+        if candidates:
+            log(db, 'possible_duplicate_requires_review', job.id,
+                candidate_ids=[x['job_id'] for x in candidates], row=number)
         for index in (1, 2):
             prefix = f'contact_{index}_'
             name = item.get(prefix + 'name', '').strip()[:120]
@@ -250,6 +262,8 @@ def import_rows(db, rows):
             contacts_created += 1
     return {
         'created': created, 'duplicates': duplicates, 'skipped': skipped,
+        'possible_duplicates': possible_duplicates,
+        'duplicate_candidates': duplicate_candidates[:20],
         'contacts_created': contacts_created, 'rows_read': len(rows),
         'job_ids': ids[:20], 'errors': errors[:30],
         'note': 'All spreadsheet claims remain unverified. No messages or outreach were sent.',
