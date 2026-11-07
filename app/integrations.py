@@ -128,6 +128,8 @@ def inspect_gmail_draft(draft: dict) -> dict:
         'to': ', '.join(recipients), 'subject': str(msg.get('Subject', '')),
         'body': body.get_content() if body else '',
         'attachment_count': sum(1 for p in msg.walk() if p.get_content_disposition() == 'attachment'),
+        'attachment_filenames': [p.get_filename() or '' for p in msg.walk()
+                                 if p.get_content_disposition() == 'attachment'],
         'thread_id': draft.get('message', {}).get('threadId', ''),
     }
 
