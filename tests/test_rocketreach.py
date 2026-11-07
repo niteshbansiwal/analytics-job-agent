@@ -41,7 +41,8 @@ def test_personal_email_never_selected():
         'id': 1, 'status': 'complete',
         'emails': [{'email': 'jane@gmail.com', 'type': 'personal'}],
     }, LINKEDIN)
-    assert result['status'] == 'not_found'
+    assert result['status'] == 'awaiting_email'  # Work email may arrive on later status check
+    assert 'email' not in result
 
 
 def test_linkedin_identity_mismatch_blocks_email():
