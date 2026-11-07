@@ -339,7 +339,7 @@ class CsvImportInput(BaseModel):
     csv_text: str = Field(min_length=10, max_length=400000)
 
 
-@app.get('/api/jobs/template.xlsx')
+@app.get('/api/spreadsheets/template.xlsx')
 def spreadsheet_template(user: str = Depends(owner)):
     from .spreadsheet_import import template_xlsx
     from io import BytesIO
