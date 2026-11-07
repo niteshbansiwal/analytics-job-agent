@@ -111,6 +111,15 @@ def gmail_create_draft(db: Session, to: str, subject: str, body: str, pdf: bytes
         payload['message']['threadId'] = thread_id
     return gmail(db, 'POST', 'drafts', json=payload)
 
+def gmail_update_draft(db: Session, draft_id: str, to: str, subject: str,
+                       body: str, pdf: bytes, filename: str) -> dict:
+    """Explicitly replace an existing unsent Gmail draft; never sends it."""
+    owner = db.get(Integration, 'gmail').owner_email
+    mime = build_mime(to, owner, subject, body, pdf, filename)
+    return gmail(db, 'PUT', f'drafts/{draft_id}', json={
+        'id': draft_id, 'message': {'raw': mime}})
+
+
 def gmail_get_draft(db: Session, draft_id: str) -> dict:
     return gmail(db, 'GET', f'drafts/{draft_id}', params={'format': 'raw'})
 
