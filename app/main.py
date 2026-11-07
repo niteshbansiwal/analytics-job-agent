@@ -413,6 +413,8 @@ def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
         status = 'not_found' if status == 'awaiting_email' else 'api_error'
     if status == 'awaiting_email' and check_count >= 3:
         status = 'not_found'
+    if status == 'pending' and check_count >= 5:
+        status = 'pending_manual'
     if status == 'returned':
         contact.email = result['email']
         contact.email_status = result.get('email_status', 'rocketreach_unverified')
@@ -430,6 +432,8 @@ def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
     detail = str(result.get('detail') or '')[:180]
     if status == 'not_found' and provider_id:
         detail = 'No professional email after checking the existing RocketReach lookup; optional paid retry available later.'
+    if status == 'pending_manual':
+        detail = 'Still processing after five checks. Automatic polling stopped; check manually later.'
     state = {
         'status': status, 'provider_id': provider_id,
         'checked_at': timestamp.isoformat(), 'next_check_at': next_check_at,
@@ -473,7 +477,7 @@ def lookup_contact_email(contact_id: str, data: RocketReachLookupInput,
                 result = _rocketreach_public(previous, contact)
                 result['detail'] = 'Existing lookup retained; use status recheck instead of another paid lookup.'
                 return result
-            if previous.get('status') in ('pending', 'awaiting_email') and previous.get('provider_id'):
+            if previous.get('status') in ('pending', 'awaiting_email', 'pending_manual') and previous.get('provider_id'):
                 raise HTTPException(409, 'Recheck the existing RocketReach lookup first; do not pay again.')
             if int(previous.get('lookup_count') or 1) >= 2:
                 raise HTTPException(409, 'Two lookups already attempted for this contact. Review manually.')
@@ -505,7 +509,7 @@ def check_contact_lookup(contact_id: str, user: str = Depends(owner)):
             return {'status': 'already_found', 'email': contact.email,
                     'email_status': contact.email_status, 'detail': 'Email already saved.'}
         previous = _rocketreach_state(db, contact.id)
-        if previous.get('status') not in ('pending', 'awaiting_email') or not previous.get('provider_id'):
+        if previous.get('status') not in ('pending', 'awaiting_email', 'pending_manual') or not previous.get('provider_id'):
             result = _rocketreach_public(previous, contact)
             result['detail'] = 'No outstanding provider lookup to check.'
             return result
