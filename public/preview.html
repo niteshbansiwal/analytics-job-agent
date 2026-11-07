@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="theme-color" content="#17253a"/>
+  <title>Atlas — Interactive Demo</title>
+  <link rel="stylesheet" href="/assets/styles.css"/>
+</head><body>
+  <div class="app-shell" id="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">✳</span><span><strong>atlas<span class="brand-dot">.</span></strong><small>CAREER OS</small></span></div>
+      <div class="workspace"><div class="workspace-avatar">NB</div><div><strong>Private workspace</strong><small>Analytics & leadership</small></div><span class="chevron">⌄</span></div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="side-nav">
+        <button data-page="overview" class="nav-item active"><span class="nav-ico">◫</span><span>Overview</span></button>
+        <button data-page="jobs" class="nav-item"><span class="nav-ico">▤</span><span>Job discovery</span><span id="nav-job-count" class="nav-count">0</span></button>
+        <button data-page="outbox" class="nav-item"><span class="nav-ico">▱</span><span>Outreach queue</span></button>
+        <button data-page="activity" class="nav-item"><span class="nav-ico">◷</span><span>Activity log</span></button>
+        <button data-page="settings" class="nav-item"><span class="nav-ico">⚙</span><span>Configuration</span></button>
+      </nav>
+      <div class="nav-label connected-label">CONNECTIONS</div>
+      <div class="integration-sidebar" id="sidebar-connections"></div>
+      <div class="sidebar-foot"><div class="sidebar-help"><span class="help-icon">?</span><span><strong>Human-in-the-loop</strong><small>Your approval controls outreach.</small></span></div><div class="sidebar-version">ATLAS V0.1.0 · PRIVATE BETA</div></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div class="top-left"><button class="mobile-menu" id="toggle-menu" aria-label="Toggle menu">☰</button><span class="breadcrumb">Workspace <span>/</span> <strong id="breadcrumb-page">Overview</strong></span></div><div class="top-right"><span class="timezone">◷ &nbsp; Asia/Kolkata · IST</span><div class="top-avatar">NB</div></div></header>
+      <div class="page" id="page-content"><div style="background:#e9f7ef;border:1px solid #b7e3ca;padding:12px 16px;border-radius:12px;margin-bottom:20px;display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap"><span><strong>Interactive demo · fictional data only.</strong> Changes stay in this browser. No email, job search, or external service is contacted.</span><button id="reset-preview" class="btn btn-ghost btn-small">Reset demo</button></div>
+        <section class="hero"><div><div class="eyebrow"><span class="eyebrow-dot"></span> YOUR PRIVATE JOB SEARCH AGENT</div><h1>Career moves, <em>made intentional.</em></h1><p>Discover meaningful roles. Reach the right people. Stay in control of every introduction.</p></div><div class="hero-side"><button class="btn btn-dark" id="search-now">⌕ &nbsp; Run discovery <span>↗</span></button><small id="run-note">Automated search · Weekdays 9:00 AM IST</small></div></section>
+        <div id="demo-banner"></div>
+        <div class="metrics" id="metrics"></div>
+        <div id="main-view"></div>
+      </div>
+    </main>
+  </div>
+  <div class="toast-host" id="toasts"></div>
+  <dialog class="modal" id="form-dialog"><div class="modal-content"><button class="modal-close" id="close-dialog" aria-label="Close">×</button><div id="modal-inner"></div></div></dialog>
+  <script src="/assets/preview.js"></script><script src="/assets/app.js"></script>
+</body></html>
