@@ -49,7 +49,7 @@ function sheetDialog(){
  <p><a class="btn btn-ghost" href="/api/spreadsheets/template.xlsx" download>↓ Download Excel template</a></p>
  <form id="sheet-import-form"><label class="form-label">Choose completed Excel or CSV file</label>
  <input class="form-input" type="file" name="file" accept=".xlsx,.csv" required>
- <p class="hint">Maximum 2 MB or 250 rows. Required columns: company, title, post_url. Every job must include a genuine source link.</p>
+ <p class="hint">Maximum 2 MB or 250 rows. Accepts the Atlas Jobs template or ChatGPT's Approved Jobs sheet (Company, Role, Job Source URL). Only rows marked Approved are imported when an Approval column exists.</p>
  <button class="btn btn-dark" type="submit">Import and validate jobs ↗</button></form>
  <div style="border-top:1px solid #e5ebf2;margin:22px 0 18px"></div>
  <h3>Or paste CSV directly</h3><p>Useful if a scheduled task provides CSV text instead of an attached spreadsheet.</p>
@@ -82,7 +82,11 @@ async function handleSheetSubmit(form){
   await load();
   sheetResult(result);
   toast(result.created+' jobs imported; '+result.duplicates+' duplicates skipped');
- }catch(err){toast(err.message,true)}
+ }catch(err){
+  const message=escapeHtml(err.message||'Unable to import this file.');
+  modal(`<h2>Import validation failed</h2><p>${message}</p><p>Atlas accepts both the official <strong>Jobs</strong> template and ChatGPT's <strong>Approved Jobs</strong> export. Check that each row has a company, role and original HTTPS job link.</p><p><a class="btn btn-ghost" href="/api/spreadsheets/template.xlsx" download>↓ Download compatible Excel template</a></p><button class="btn btn-dark" type="button" id="retry-sheet-import">Try another file</button>`);
+  toast('Import failed — see validation details.',true);
+ }
  finally{submit.disabled=false}
 }
 
@@ -95,7 +99,7 @@ async function promptDialog(){
 function contactDialog(id){modal(`<h2>Add hiring-side contact</h2><p>Only add a person whose identity you can support with an original post or professional profile. Email is optional.</p><form id="contact-form" data-jobid="${id}"><label class="form-label">Name *</label><input class="form-input" name="name" required placeholder="Contact's verified name"><label class="form-label">Current role</label><input class="form-input" name="title" placeholder="Talent Acquisition / Director of Analytics"><label class="form-label">LinkedIn profile URL</label><input class="form-input" name="linkedin_url" type="url" placeholder="https://www.linkedin.com/in/..."><label class="form-label">Professional email (optional)</label><input class="form-input" name="email" type="email" placeholder="Only a genuinely sourced address"><label class="form-label">Evidence URL</label><input class="form-input" name="evidence_url" type="url" placeholder="Link to job announcement/profile"><button type="submit" class="btn btn-dark">Save contact</button></form>`)}
 async function mutate(path){try{await api(path,{method:'POST'});await load();toast('Updated successfully.')}catch(e){toast(e.message,true)}}
 document.addEventListener('submit',async e=>{if(['sheet-import-form','csv-import-form'].includes(e.target.id)){e.preventDefault();await handleSheetSubmit(e.target)}});
-document.addEventListener('click',e=>{if(e.target.closest('#import-done')){closeModal();setPage('jobs')}if(e.target.closest('#copy-research-prompt')){const value=document.querySelector('#prompt-form textarea')?.value||'';navigator.clipboard.writeText(value).then(()=>toast('Prompt copied. Paste it into your scheduled ChatGPT task.')).catch(()=>toast('Copy failed. Select the text and copy manually.',true));}});
+document.addEventListener('click',e=>{if(e.target.closest('#import-done')){closeModal();setPage('jobs')}if(e.target.closest('#retry-sheet-import')){sheetDialog()}if(e.target.closest('#copy-research-prompt')){const value=document.querySelector('#prompt-form textarea')?.value||'';navigator.clipboard.writeText(value).then(()=>toast('Prompt copied. Paste it into your scheduled ChatGPT task.')).catch(()=>toast('Copy failed. Select the text and copy manually.',true));}});
 document.addEventListener('click',async e=>{
  const btn=e.target.closest('[data-page],[data-filter],[data-job],[data-action]');if(!btn)return;
  if(btn.dataset.page){setPage(btn.dataset.page);return}
