@@ -81,23 +81,6 @@ class Outreach(Base):
     error: Mapped[str] = mapped_column(Text, default='')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
-class TelegramReview(Base):
-    """Telegram-first candidate queue; never enters the Atlas jobs table until Excel upload."""
-    __tablename__ = 'telegram_reviews'
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    batch_id: Mapped[str] = mapped_column(String(36), index=True)
-    url_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    company: Mapped[str] = mapped_column(String(200))
-    title: Mapped[str] = mapped_column(String(250))
-    post_url: Mapped[str] = mapped_column(Text)
-    payload: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(20), default='pending', index=True)
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-
-
 class Integration(Base):
     __tablename__ = 'integrations'
     provider: Mapped[str] = mapped_column(String(80), primary_key=True)
