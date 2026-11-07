@@ -33,10 +33,10 @@
 </style></head><body><div class="welcome">
 <nav class="welcome-nav"><div class="welcome-logo"><i>✳</i> atlas<span style="color:#2b9977">.</span></div><a href="/preview.html" style="font-weight:700;font-size:13px">Try the demo ↗</a></nav>
 <main class="welcome-main"><div><div class="welcome-kicker">YOUR PRIVATE CAREER RESEARCH AGENT</div><h1>Find better roles.<br><span>Reach the right people.</span></h1>
-<p class="welcome-intro">A focused workspace for Manager and Senior Manager Analytics opportunities. Combine job-search APIs with independent AI web research, review hiring contacts, and approve outreach on your terms.</p>
+<p class="welcome-intro">A focused workspace for Manager and Senior Manager Analytics opportunities. Use scheduled ChatGPT research and import Excel or CSV files without paying for an AI API. Review hiring contacts and approve outreach on your terms.</p>
 <div class="welcome-steps">
 <div class="welcome-step"><b>1</b><div><strong>Sign in with Google</strong><small>Secure, owner-only access to your private workspace.</small></div></div>
-<div class="welcome-step"><b>2</b><div><strong>Find jobs with two search engines</strong><small>Public job-index search and ChatGPT-powered research using your saved prompt.</small></div></div>
+<div class="welcome-step"><b>2</b><div><strong>Import your ChatGPT research</strong><small>Schedule job searches in ChatGPT, then upload the Excel/CSV output. Atlas skips duplicates automatically.</small></div></div>
 <div class="welcome-step"><b>3</b><div><strong>Review sources and approve</strong><small>Check the original posting, dates, contacts and match. No immediate email is sent.</small></div></div>
 </div></div>
 <div class="welcome-card"><div class="card-mark">✳</div><h2>Welcome to Atlas</h2><p>Sign in with your configured Google account to open your job-search workspace. Gmail access is requested separately when you enable outreach.</p>
@@ -46,13 +46,13 @@
 <strong style="font-size:13px;color:#17243a">Setup checklist</strong>
 <div id="setup-steps" style="margin-top:9px"></div>
 <div style="margin-top:10px"><a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener noreferrer">Create Google OAuth client ↗</a> · <a href="https://vercel.com/niteshs-projects-b6403823/analytics-job-agent/settings/environment-variables" target="_blank" rel="noopener noreferrer">Vercel environment variables ↗</a></div>
-<div style="margin-top:7px"><a href="https://vercel.com/dashboard/stores" target="_blank" rel="noopener noreferrer">Set up PostgreSQL ↗</a> · <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI API keys ↗</a></div>
+<div style="margin-top:7px"><a href="https://vercel.com/dashboard/stores" target="_blank" rel="noopener noreferrer">Set up PostgreSQL ↗</a></div>
 <div style="margin-top:10px;color:#61718a">Google OAuth redirect URI (copy exactly):</div>
 <code id="redirect-uri" style="display:block;overflow-wrap:anywhere;background:#edf2f6;border-radius:6px;padding:8px;margin-top:4px">https://analytics-job-agent.vercel.app/api/auth/google/callback</code>
 </div>
 <div class="welcome-divider"></div>
 <a class="welcome-demo" href="/preview.html">Explore the interactive demo →</a>
-<div class="welcome-status">The demo uses fictional job data. Live discovery requires configured API keys and a database. Sending is disabled by default.</div>
+<div class="welcome-status">The demo uses fictional job data. Live spreadsheet import requires Google sign-in and the database, but no paid AI API key. Sending is disabled by default.</div>
 </div></main><footer class="welcome-footer">ATLAS · PRIVATE BETA · HUMAN APPROVAL REQUIRED</footer></div>
 <script>
 (async()=>{
@@ -70,7 +70,7 @@
     label.textContent='Open my workspace';button.href='/app';
     status.textContent='You are signed in. Your workspace is available.';return;
   }
-  const missing=!data.google_ready||!data.database_configured||!data.chatgpt_search_configured;
+  const missing=!data.google_ready||!data.database_configured;
   checklist.style.display=missing?'block':'none';
   steps.innerHTML=[
     state(data.app_origin_configured,'HTTPS app origin'),
@@ -78,8 +78,7 @@
     state(data.secrets_configured,'Secure session and encryption keys'),
     state(data.google_oauth_configured,'Google OAuth client ID and secret'),
     state(data.database_configured,'Persistent PostgreSQL database'),
-    state(data.chatgpt_search_configured,'OpenAI API key for ChatGPT web research'),
-    state(data.search_configured,'Serper API key for indexed job search (optional)')
+    state(true,'Excel/CSV import (no paid AI API needed)')
   ].join('');
   if(!data.google_ready){
     button.removeAttribute('href');button.style.opacity='.55';button.style.cursor='not-allowed';
