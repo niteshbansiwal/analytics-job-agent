@@ -193,7 +193,7 @@ def discover_chatgpt(db: Session, *, prompt: str | None = None, notify: bool = T
             Job.company.ilike(hit['company']),
             Job.title.ilike(hit['title']),
             Job.location.ilike(hit['location'])
-        )).scalar_one_or_none()
+        ).limit(1)).scalars().first()
         if duplicate:
             continue
         score, why, gaps = ranking(hit['company'], hit['title'], hit['location'],
