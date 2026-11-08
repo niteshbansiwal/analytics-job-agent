@@ -191,7 +191,7 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         'My background combines analytics delivery with hands-on SQL, dashboarding and applied AI.\n\n'
         + ''.join('- ' + CAREER_FACTS[fact_id] + '\n' for fact_id in ids)
         + '\nI would welcome a brief conversation if my experience aligns with the role. '
-        'I can share a resume tailored to the job description.\n\n'
+        'Please find my resume attached for your review.\n\n'
         'Regards,\nNitesh Bansiwal'
     )
     return {

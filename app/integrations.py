@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import hashlib
 import os
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -139,6 +140,8 @@ def inspect_gmail_draft(draft: dict) -> dict:
         'attachment_count': sum(1 for p in msg.walk() if p.get_content_disposition() == 'attachment'),
         'attachment_filenames': [p.get_filename() or '' for p in msg.walk()
                                  if p.get_content_disposition() == 'attachment'],
+        'attachment_sha256': [hashlib.sha256(p.get_payload(decode=True) or b'').hexdigest()
+                              for p in msg.walk() if p.get_content_disposition() == 'attachment'],
         'thread_id': draft.get('message', {}).get('threadId', ''),
     }
 

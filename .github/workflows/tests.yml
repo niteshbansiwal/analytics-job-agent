@@ -20,3 +20,7 @@ jobs:
         env:
           DEMO_MODE: 'true'
         run: python -m pytest -q
+      - name: Check JavaScript and fixed-PDF UI contracts
+        run: |
+          node --check public/app.js
+          node tests/test_ui.cjs
