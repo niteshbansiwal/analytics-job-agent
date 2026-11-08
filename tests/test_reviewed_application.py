@@ -10,6 +10,7 @@ from app import integrations
 from app.db import Job, Contact, Integration, Outreach, session
 from app.resume import resume_facts, resume_selection, tailored_pdf
 from app import resume_master
+from app.resume_library import save_resume, digest
 from io import BytesIO
 from reportlab.pdfgen import canvas
 
@@ -39,15 +40,13 @@ def test_master_resume_source_and_selectable_pdf():
 
 def test_reviewed_draft_requires_confirmation_and_verifies_pdf_without_sending(monkeypatch):
     monkeypatch.setattr(main, 'demo_mode', lambda: False)
-    monkeypatch.setattr(resume_master, 'get_master', lambda db: b'%PDF-test-master')
-    def fake_master_render(pdf, selected_bullets=None):
-        resume_master.validate_selection(selected_bullets)
-        output = BytesIO()
-        document = canvas.Canvas(output, pagesize=(612, 792))
-        document.drawString(40, 720, 'Offline PDF review fixture')
-        document.save()
-        return output.getvalue()
-    monkeypatch.setattr(resume_master, 'render_master', fake_master_render)
+    output = BytesIO()
+    document = canvas.Canvas(output, pagesize=(612, 792))
+    document.drawString(40, 720, 'Offline original PDF fixture')
+    document.save()
+    original_pdf = output.getvalue()
+    with session() as db:
+        save_resume(db, 'analytics', original_pdf)
     main.app.dependency_overrides[main.owner] = lambda: 'offline-owner'
     job_id, contact_id = str(uuid4()), str(uuid4())
     with session() as db:
@@ -68,7 +67,7 @@ def test_reviewed_draft_requires_confirmation_and_verifies_pdf_without_sending(m
     draft_raw = {}
     def fake_create(db, to, subject, body, pdf, filename):
         calls['create'] += 1
-        assert pdf.startswith(b'%PDF')
+        assert pdf == original_pdf
         draft_raw['raw'] = integrations.build_mime(to, 'owner@example.com', subject,
                                                     body, pdf, filename)
         return {'id': 'offline-draft-1'}
@@ -91,21 +90,25 @@ def test_reviewed_draft_requires_confirmation_and_verifies_pdf_without_sending(m
     payload = {
         'contact_id': contact_id, 'recipient_email': 'recruiter@example.com',
         'subject': 'Decision Analytics Manager', 'body': 'Hello, I would like to discuss the analytics manager opening.',
-        'selected_bullets': chosen, 'reviewed': True,
+        'resume_id': 'analytics', 'resume_sha256': digest(original_pdf), 'reviewed': True,
     }
     try:
         preview = client.post('/api/jobs/'+job_id+'/reviewed-resume.pdf',
-                              json={'selected_bullets': chosen})
+                              json={'resume_id': 'analytics', 'resume_sha256': digest(original_pdf)})
         assert preview.status_code == 200, preview.text
         assert preview.headers['content-type'].startswith('application/pdf')
-        assert preview.content.startswith(b'%PDF')
+        assert preview.content == original_pdf
         unreviewed = client.post('/api/jobs/'+job_id+'/reviewed-draft',
                                  json={**payload, 'reviewed': False})
         assert unreviewed.status_code == 422
         assert calls['create'] == 0
         invalid = client.post('/api/jobs/'+job_id+'/reviewed-draft',
-                              json={**payload, 'selected_bullets': {'0': [999]}})
+                              json={**payload, 'resume_id': 'invented'})
         assert invalid.status_code == 422
+        assert calls['create'] == 0
+        stale = client.post('/api/jobs/'+job_id+'/reviewed-draft',
+                            json={**payload, 'resume_sha256': '0'*64})
+        assert stale.status_code == 409
         assert calls['create'] == 0
         response = client.post('/api/jobs/'+job_id+'/reviewed-draft', json=payload)
         assert response.status_code == 200, response.text

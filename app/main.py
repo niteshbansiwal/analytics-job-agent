@@ -11,10 +11,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
-from fastapi import FastAPI, HTTPException, Depends, Request, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Request, Response, UploadFile, File, Form
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, ConfigDict
+from typing import Literal
+from .resume_library import list_resumes, get_resume, save_resume, MAX_BYTES, digest
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from .config import ROOT, env, settings, demo_mode
@@ -119,7 +121,8 @@ def workspace():
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'demo': demo_mode(), 'version': '0.1.0'}
+    return {'ok': True, 'demo': demo_mode(), 'version': '0.2.0',
+            'commit': env('VERCEL_GIT_COMMIT_SHA', 'local'), 'resume_mode': 'fixed_pdf'}
 
 @app.get('/api/auth/status')
 def auth_status(request: Request):
@@ -227,10 +230,7 @@ def overview(user: str = Depends(owner)):
         cfg = settings()
         return {
             'demo': demo_mode(),
-            'resume_master': {'configured': bool(get_kv(db, 'approved_resume_master_pdf_b64', '')),
-                              'source': 'Nitesh_Bansiwal_Resume_-_2026-08(1).pdf',
-                              'minimum_original_projects': 15, 'original_project_count': 18,
-                              'one_page_required': True},
+            'resumes': list_resumes(db),
             'jobs': [json_job(j, db) for j in jobs],
             'outreach': [json_outreach(o) for o in letters],
             'events': [{'action': e.action, 'details': json.loads(e.details or '{}'),
@@ -257,42 +257,30 @@ def overview(user: str = Depends(owner)):
             },
         }
 
-@app.get('/api/resume/master')
-def resume_master_status(user: str = Depends(owner)):
-    """Report master readiness without exposing private resume content."""
-    from .resume_master import get_master, MASTER_NAME, MIN_PROJECTS
+@app.get('/api/resumes')
+def resumes_status(user: str = Depends(owner)):
     with session() as db:
-        try:
-            configured = get_master(db) is not None
-        except ValueError:
-            configured = False
-        return {'configured': configured, 'source': MASTER_NAME,
-                'minimum_projects': MIN_PROJECTS, 'total_projects': 18,
-                'preserve_original_layout': True, 'page_count': 1}
+        return {'resumes': list_resumes(db)}
 
 
-@app.post('/api/resume/master')
-async def upload_resume_master(file: UploadFile = File(...),
-                               user: str = Depends(owner)):
-    """One-time, authenticated upload of the exact approved master resume PDF."""
-    from .resume_master import save_master, MASTER_NAME
+@app.post('/api/resumes/{resume_id}')
+async def upload_fixed_resume(resume_id: Literal['analytics', 'data_science'],
+                              file: UploadFile = File(...),
+                              expected_sha256: str = Form(''),
+                              user: str = Depends(owner)):
     if demo_mode():
-        raise HTTPException(409, 'Master upload is available only in live mode.')
-    if file.content_type not in ('application/pdf', 'application/octet-stream'):
-        raise HTTPException(422, 'Upload the approved PDF file.')
-    raw = await file.read(1_000_001)
+        raise HTTPException(409, 'Resume upload is available only in live mode.')
+    raw = await file.read(MAX_BYTES + 1)
     await file.close()
-    if len(raw) > 1_000_000:
-        raise HTTPException(413, 'Resume PDF must be smaller than 1 MB.')
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(413, 'Resume PDF must be smaller than 4 MB.')
     with session() as db:
         try:
-            save_master(db, raw)
+            result = save_resume(db, resume_id, raw, expected_sha256=expected_sha256)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
-        log(db, 'approved_master_resume_uploaded', source=MASTER_NAME, bytes=len(raw))
-    return {'configured': True, 'source': MASTER_NAME,
-            'page_count': 1, 'minimum_projects': 15,
-            'original_layout_preserved': True}
+        log(db, 'fixed_resume_uploaded', resume_id=resume_id, sha256=result['sha256'])
+        return result
 
 
 @app.post('/api/integrations/gemini/test')
@@ -317,15 +305,14 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         job = db.get(Job, job_id)
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found.')
-        from .resume_master import get_master, master_selection
-        master = get_master(db)
-        if master is None:
-            raise HTTPException(409, 'Upload the approved original resume PDF in Configuration before Gemini review.')
+        available = [r for r in list_resumes(db) if r['configured']]
+        if not available:
+            raise HTTPException(409, 'Upload your Analytics or Data Science PDF in Configuration first.')
         contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
         name = next((c.name for c in contacts if c.email), '') or (
             contacts[0].name if contacts else '')
         result = build_email_preview(job.company, job.title, job.jd or '', name)
-        result['resume'] = master_selection(master, job.jd or '', job.title)
+        result['resumes'] = available
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
             draft_created=False, email_sent=False)
@@ -333,42 +320,39 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
 
 
 class ResumePreviewInput(BaseModel):
-    selected_bullets: dict[str, list[int]]
+    model_config = ConfigDict(extra='forbid')
+    resume_id: Literal['analytics', 'data_science']
+    resume_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+def selected_pdf(db, data):
+    try:
+        item, raw = get_resume(db, data.resume_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    if item['sha256'] != data.resume_sha256:
+        raise HTTPException(409, 'Resume changed. Reopen the preview and review the current PDF.')
+    return item, raw
 
 
 @app.post('/api/jobs/{job_id}/reviewed-resume.pdf')
 def reviewed_resume_pdf(job_id: str, data: ResumePreviewInput,
                         user: str = Depends(owner)):
-    """Preview exactly the source-resume bullets selected by the owner."""
-    from .resume import tailored_pdf
-    from .resume_master import get_master
     with session() as db:
         job = db.get(Job, job_id)
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found.')
-        master = get_master(db)
-        if master is None:
-            raise HTTPException(409, 'Upload the approved original resume PDF before generating a resume.')
-        try:
-            pdf = tailored_pdf(job.jd or '', job.title,
-                               selected_bullets=data.selected_bullets,
-                               master_pdf=master)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc))
-        if not pdf.startswith(b'%PDF'):
-            raise HTTPException(500, 'Resume generation failed.')
-        from io import BytesIO
-        return StreamingResponse(BytesIO(pdf), media_type='application/pdf',
-                                 headers={'Content-Disposition': 'inline; filename="Atlas_Reviewed_Resume.pdf"',
-                                          'Cache-Control': 'no-store'})
+        item, raw = selected_pdf(db, data)
+        return Response(raw, media_type='application/pdf', headers={
+            'Content-Disposition': f'inline; filename="{item["filename"]}"',
+            'Cache-Control': 'no-store', 'X-Resume-SHA256': item['sha256']})
 
 
-class ReviewedDraftInput(BaseModel):
+class ReviewedDraftInput(ResumePreviewInput):
     contact_id: str = Field(min_length=1, max_length=36)
     recipient_email: str = Field(min_length=5, max_length=200)
     subject: str = Field(min_length=3, max_length=200)
     body: str = Field(min_length=30, max_length=8000)
-    selected_bullets: dict[str, list[int]]
     reviewed: bool = False
     replace_existing_draft: bool = False
 
@@ -384,13 +368,11 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
     if ('\n' in data.subject or '\r' in data.subject
             or not data.subject.strip() or not data.body.strip()):
         raise HTTPException(422, 'Subject or email body is invalid.')
-    from .resume import tailored_pdf
-    from .resume_master import get_master
     from .integrations import (gmail_create_draft, gmail_update_draft,
                                gmail_get_draft, inspect_gmail_draft,
                                gmail_delete_draft)
     with session() as db:
-        job = db.get(Job, job_id)
+        job = db.get(Job, job_id, with_for_update=True)
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found.')
         if job.status == 'rejected':
@@ -411,18 +393,8 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             raise HTTPException(409, 'This job already has sent or active outreach; no duplicate draft created.')
         if row and row.gmail_draft_id and not data.replace_existing_draft:
             raise HTTPException(409, 'Existing Gmail draft: confirm replacement before overwriting its edits.')
-        master = get_master(db)
-        if master is None:
-            raise HTTPException(409, 'Upload the approved original resume PDF before generating a resume.')
-        try:
-            pdf = tailored_pdf(job.jd or '', job.title,
-                               selected_bullets=data.selected_bullets,
-                               master_pdf=master)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc))
-        if not pdf.startswith(b'%PDF'):
-            raise HTTPException(500, 'Generated resume was not a valid PDF.')
-        filename = settings()['resume']['attachment_filename']
+        item, pdf = selected_pdf(db, data)
+        filename = item['filename']
         draft_id = row.gmail_draft_id if row else ''
         created_new = not bool(draft_id)
         try:
@@ -441,6 +413,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
                     or verified['subject'] != data.subject
                     or verified['attachment_count'] != 1
                     or verified['attachment_filenames'] != [filename]
+                    or verified['attachment_sha256'] != [digest(pdf)]
                     or verified['body'].strip().replace('\r\n', '\n')
                        != data.body.strip().replace('\r\n', '\n')):
                 raise RuntimeError('Gmail draft verification mismatch; review in Gmail.')
@@ -471,7 +444,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
         db.flush()
         log(db, 'reviewed_gmail_draft_verified', job.id, row.id,
             gmail_draft_id=draft_id, recipient=contact.email,
-            selected_bullets=data.selected_bullets, sent=False)
+            resume_id=data.resume_id, resume_sha256=item['sha256'], sent=False)
         return {'verified': True, 'sent': False, 'scheduled': False,
                 'draft_id': draft_id, 'resume_filename': filename,
                 'recipient_email': contact.email,
@@ -497,70 +470,8 @@ def approve(job_id: str, user: str = Depends(owner)):
         return json_outreach(row)
 
 @app.post('/api/jobs/{job_id}/test-gmail-draft')
-def test_gmail_resume_attachment(job_id: str, user: str = Depends(owner)):
-    """Explicit owner-initiated smoke test. Draft to SELF; never send or approve job.
-
-    Creates a real Gmail draft containing a generated PDF, reads the draft
-    back from Gmail and checks its recipient and attachment filename.
-    """
-    if demo_mode():
-        raise HTTPException(409, 'Gmail draft testing is unavailable in demo mode.')
-    from .resume import tailored_pdf
-    from .integrations import (gmail_create_draft, gmail_get_draft,
-                               inspect_gmail_draft, gmail_delete_draft)
-    import re
-    with session() as db:
-        connection = db.get(Integration, 'gmail')
-        if not connection:
-            raise HTTPException(409, 'Connect Gmail under Configuration first.')
-        job = db.get(Job, job_id)
-        if not job or job.is_demo:
-            raise HTTPException(404, 'Imported job not found.')
-        # This is only a delivery/attachment test, not the final AI resume.
-        from .resume_master import get_master
-        master = get_master(db)
-        if master is None:
-            raise HTTPException(409, 'Upload approved master resume PDF before testing Gmail attachments.')
-        pdf = tailored_pdf(job.jd, job.title, master_pdf=master)
-        if not pdf.startswith(b'%PDF'):
-            raise HTTPException(500, 'Generated resume is not a valid PDF.')
-        safe_company = re.sub(r'[^A-Za-z0-9_-]+', '_', job.company).strip('_')[:36] or 'Job'
-        filename = f'ATLAS_TEST_{safe_company}_Resume.pdf'
-        subject = f'[ATLAS TEST - DO NOT SEND] Resume PDF attachment: {job.company}'
-        body = ('This is a private Atlas Gmail attachment test addressed to myself.\\n'
-                'The attached PDF is generated from the current resume template, '
-                'not the final AI-personalized version.\\n'
-                'Please review the attachment and discard this draft after checking.\\n'
-                'No recruiter has been contacted.')
-        draft_id = ''
-        try:
-            created = gmail_create_draft(db, connection.owner_email, subject, body, pdf, filename)
-            draft_id = created['id']
-            verified = inspect_gmail_draft(gmail_get_draft(db, draft_id))
-            if (verified['to'].lower() != connection.owner_email.lower()
-                    or verified['attachment_count'] != 1
-                    or verified['attachment_filenames'] != [filename]
-                    or verified['subject'] != subject):
-                raise RuntimeError('Draft verification mismatch (recipient, subject or PDF attachment).')
-            log(db, 'gmail_attachment_test_verified', job.id,
-                gmail_draft_id=draft_id, attachment_count=1)
-            return {'verified': True, 'job_id': job.id, 'company': job.company,
-                    'to': connection.owner_email, 'subject': subject,
-                    'attachment_count': 1, 'filename': filename,
-                    'draft_id': draft_id,
-                    'gmail_url': 'https://mail.google.com/mail/u/0/#drafts',
-                    'sent': False}
-        except Exception as exc:
-            if draft_id:
-                try:
-                    gmail_delete_draft(db, draft_id)
-                except Exception:
-                    pass
-            detail = (f'Gmail API returned HTTP {exc.response.status_code}'
-                      if isinstance(exc, httpx.HTTPStatusError)
-                      else type(exc).__name__)
-            raise HTTPException(502, f'Gmail draft verification failed: {detail}. '
-                                'Check Gmail OAuth and API permissions. No email was sent.')
+def retired_gmail_test(job_id: str, user: str = Depends(owner)):
+    raise HTTPException(410, 'Custom resume tests have been retired. Use the reviewed fixed-PDF draft flow.')
 
 
 @app.post('/api/jobs/{job_id}/reject')
@@ -873,6 +784,8 @@ def get_tailored_resume(outreach_id: str, user: str = Depends(owner)):
 
 @app.post('/api/outreach/{outreach_id}/schedule')
 def reschedule(outreach_id: str, user: str = Depends(owner)):
+    if not demo_mode():
+        raise HTTPException(409, 'Scheduled sending is disabled. Use reviewed drafts only.')
     with session() as db:
         row = db.get(Outreach, outreach_id)
         if not row:
