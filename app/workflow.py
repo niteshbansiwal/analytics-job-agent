@@ -196,7 +196,7 @@ def monitor_replies(db: Session) -> dict:
             log(db, 'reply_received', row.job_id, row.id, reply_class=category, message_id=message['id'])
             new += 1
             if category != "out_of_office":
-                send_telegram(f"Atlas: {'Delivery failed' if category == 'bounce' else 'Human reply received'} — {job.company} - {job.title}\\nClassification: {category}\\nGmail thread: https://mail.google.com/mail/u/0/#all/{row.gmail_thread_id}\\nFollow-ups stopped.")
+                send_telegram(f"Atlas: {'Delivery failed' if category == 'bounce' else 'Human reply received'} — {job.company} - {job.title}\nClassification: {category}\nGmail thread: https://mail.google.com/mail/u/0/#all/{row.gmail_thread_id}\nFollow-ups stopped.")
         except Exception as exc:
             log(db, 'reply_check_failed', row.job_id, row.id, error=str(exc)[:300])
     return {'checked': len(rows), 'new_replies': new}
