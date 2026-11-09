@@ -1,7 +1,7 @@
 """Privacy-minimised Gemini integration for reviewed, fact-locked outreach previews.
 
 Never sends Gmail, never includes contact details or resume PDF in model prompts.
-The model selects IDs from a curated fact list; Atlas composes the email itself.
+Gemini drafts the complete email; Atlas validates and sanitizes its output.
 """
 from __future__ import annotations
 
@@ -169,8 +169,29 @@ def _validated_ids(raw: str) -> list[str]:
     return ids
 
 
-def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, list[str]]:
-    """Fail closed if Gemini did not actually draft the complete email."""
+_EMAIL_ADDRESS = re.compile(r'(?<![\w.+-])[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}', re.IGNORECASE)
+_WEB_URL = re.compile(r'(?i)\b(?:https?://|www\.)[^\s<>\])}]+')
+_MARKDOWN_WEB_LINK = re.compile(r'\[([^\]\n]{1,120})\]\(((?:https?://|www\.)[^)\s]+)\)', re.IGNORECASE)
+
+
+def _sanitize_ai_contact_details(value: str) -> tuple[str, bool]:
+    """Strip model-invented links and addresses without losing valid prose."""
+    original = value
+    value = _MARKDOWN_WEB_LINK.sub(lambda m: m.group(1), value)
+    value = _WEB_URL.sub('', value)
+    value = _EMAIL_ADDRESS.sub('', value)
+    clean_lines = []
+    for line in value.splitlines():
+        line = re.sub(r'(?i)\b(?:email|website|linkedin|portfolio|contact)\s*:\s*$', '', line).rstrip()
+        if line.strip() in ('-', '•', '*', '(', ')'):
+            continue
+        clean_lines.append(line)
+    value = '\n'.join(clean_lines).strip()
+    return value, value != original
+
+
+def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, list[str], bool]:
+    """Validate full Gemini email and remove unsafe model-invented contact details."""
     try:
         parsed = json.loads(raw)
     except (ValueError, TypeError) as exc:
@@ -182,15 +203,17 @@ def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, li
         ids = _validated_ids(json.dumps({'fact_ids': parsed.get('fact_ids')}))
     except (ValueError, TypeError) as exc:
         raise GeminiError('Gemini did not provide valid verified career fact IDs') from exc
-    if not isinstance(subject, str) or not 8 <= len(subject.strip()) <= 180:
+    if not isinstance(subject, str) or not isinstance(body, str):
+        raise GeminiError('Gemini did not generate a complete email')
+    subject, subject_cleaned = _sanitize_ai_contact_details(subject)
+    body, body_cleaned = _sanitize_ai_contact_details(body)
+    if not 8 <= len(subject) <= 180:
         raise GeminiError('Gemini did not generate a usable subject')
-    if not isinstance(body, str) or not 120 <= len(body.strip()) <= 2800:
+    if not 120 <= len(body) <= 2800:
         raise GeminiError('Gemini did not generate a complete email body')
-    if re.search(r'https?://|[\w.+-]+@[\w.-]+\.\w+', body):
-        raise GeminiError('Gemini added a link or email address not supplied by Atlas')
-    # Numbers and quantified results in the candidate's email must be
-    # supported by one of the verified facts selected by the model.
-    approved_numbers = set(re.findall(r'\d[\d,.]*%?', ' '.join(CAREER_FACTS[k] for k in ids)))
+    # Any verified fact can support a quantified claim, even when it is not
+    # one of the two or three highlighted fact IDs selected by the model.
+    approved_numbers = set(re.findall(r'\d[\d,.]*%?', ' '.join(CAREER_FACTS.values())))
     used_numbers = set(re.findall(r'\d[\d,.]*%?', body))
     if not used_numbers.issubset(approved_numbers):
         raise GeminiError('Gemini added an unsupported numerical career claim')
@@ -199,7 +222,7 @@ def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, li
     if company.casefold() not in body.casefold() and not any(
             term in body.casefold() for term in role_terms):
         raise GeminiError('Gemini draft is not sufficiently tailored to this job')
-    return subject.strip(), body.strip(), ids
+    return subject.strip(), body.strip(), ids, (subject_cleaned or body_cleaned)
 
 
 def build_email_preview(company: str, title: str, jd: str, contact_name: str = '',
@@ -256,7 +279,7 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     # A failed or malformed response is surfaced; it must not enter the
     # automated Gmail drafting and sending pipeline as a generic fallback.
     raw = gemini_text(prompt, json_output=True)
-    subject, body, ids = _validate_ai_email(raw, title, company)
+    subject, body, ids, removed_unverified_contact_details = _validate_ai_email(raw, title, company)
     first_name = (contact_name or '').strip().split(' ')[0]
     if (contact_name or '').strip().casefold() == 'hiring team':
         first_name = 'Hiring Team'
@@ -269,8 +292,11 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         body += '\n\nRegards,\nNitesh Bansiwal'
     return {
         'model': gemini_model(), 'primary_model': gemini_model(),
-        'mode': 'ai_email', 'warning': '',
+        'mode': 'ai_email',
+        'warning': ('Gemini included an unverified link or email address; Atlas removed it from this draft. Review before sending.'
+                    if removed_unverified_contact_details else ''),
         'subject': subject, 'body': body, 'selected_fact_ids': ids,
+        'removed_unverified_contact_details': removed_unverified_contact_details,
         'prompt_source': prompt_source,
         'prompt_characters': len(owner_prompt),
         'prompt_fingerprint': prompt_fingerprint,
