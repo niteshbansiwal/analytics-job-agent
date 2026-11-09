@@ -257,7 +257,7 @@ def overview(user: str = Depends(owner)):
                 'scheduler_reply_last_run': get_kv(db, 'scheduler_reply_last_run', ''),
                 'scheduler_reply_last_success': get_kv(db, 'scheduler_reply_last_success', ''),
                 'scheduler_reply_last_result': get_kv(db, 'scheduler_reply_last_result', ''),
-                'scheduler_cadence_minutes': 10,
+                'scheduler_cadence_minutes': 15,
                 'scheduler_provider': 'Vercel Schedules (registration unverified)',
                 'scheduler_last_result': get_kv(db, 'scheduler_last_result', ''),
                 'auto_import_enabled': get_kv(db, 'atlas_auto_import_enabled', '') == 'true',
@@ -1172,4 +1172,4 @@ def cron_tick(request: Request):
         set_kv(db, 'scheduler_last_result', json.dumps(results, default=str)[:3000])
         log(db, 'scheduler_tick', **results)
         db.commit()
-        return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 10}
+        return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 15}
