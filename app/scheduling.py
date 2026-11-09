@@ -36,6 +36,19 @@ def schedule_slot(db, requested: datetime):
         raise ValueError('Choose a send time at least two minutes from now.')
     return utc
 
+def manual_schedule_slot(requested: datetime):
+    if requested.tzinfo is None:
+        raise ValueError('Schedule needs an explicit timezone offset.')
+    utc = requested.astimezone(timezone.utc)
+    if utc <= now():
+        raise ValueError('Choose a future send time.')
+    return utc
+
+
+def is_manual(db, outreach_id: str) -> bool:
+    return get_kv(db, 'manual_schedule:' + outreach_id, '') == 'true'
+
+
 def save_holidays(db, dates: list[str]):
     days = sorted({date.fromisoformat(value).isoformat() for value in dates})
     if len(days) > 200:
@@ -44,6 +57,8 @@ def save_holidays(db, dates: list[str]):
     shifted = []
     rows = db.execute(select(Outreach).where(Outreach.status == 'scheduled', Outreach.due_at.is_not(None)).with_for_update()).scalars().all()
     for row in rows:
+        if is_manual(db, row.id):
+            continue
         original = row.due_at.replace(tzinfo=timezone.utc) if row.due_at.tzinfo is None else row.due_at
         local = original.astimezone(IST)
         new_local = shift_holiday(local, set(days))
