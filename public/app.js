@@ -63,7 +63,7 @@ function probeStatusPanel(){
 function schedulerStatusPanel(){
  const s=state.data?.settings||{};
  const cadence=Number(s.scheduler_cadence_minutes||15);
- const next=new Date(Math.ceil((Date.now()+1000)/(cadence*60000))*cadence*60000);
+ const next=new Date(Math.ceil((Date.now()+1000-5*60000)/(cadence*60000))*cadence*60000+5*60000);
  const lastRun=s.scheduler_last_tick?new Date(s.scheduler_last_tick):null;
  const stale=!lastRun||Date.now()-lastRun.getTime()>40*60000;
  const groups=[
