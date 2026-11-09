@@ -71,7 +71,7 @@ def owner(request: Request):
 
 def json_job(job: Job, db: Session):
     contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
-    outreach = db.execute(select(Outreach).where(Outreach.job_id == job.id)).scalar_one_or_none()
+    outreach = db.execute(select(Outreach).where(Outreach.job_id == job.id).order_by(Outreach.created_at.desc())).scalars().first()
     return {
       'id': job.id, 'company': job.company, 'title': job.title, 'location': job.location,
       'arrangement': job.arrangement, 'experience': job.experience, 'salary': job.salary,
@@ -559,7 +559,7 @@ def update_email_holidays(data: HolidaysInput, user: str = Depends(owner)):
 
 @app.delete('/api/jobs/{job_id}')
 def delete_imported_job(job_id: str, user: str = Depends(owner)):
-    """Delete an imported job only if it has no sent/replied outreach."""
+    """Delete unsent jobs; archive sent jobs without losing Gmail reply tracking."""
     if demo_mode():
         raise HTTPException(409, 'Deletion disabled in demo mode')
     from sqlalchemy import delete
@@ -569,25 +569,86 @@ def delete_imported_job(job_id: str, user: str = Depends(owner)):
         if not job or job.is_demo:
             raise HTTPException(404, 'Imported job not found')
         rows = db.execute(select(Outreach).where(Outreach.job_id == job_id).with_for_update()).scalars().all()
-        if any(row.sent_at or row.sent_message_id or row.gmail_thread_id or row.status in ('sent', 'reply_received', 'replied') for row in rows):
-            raise HTTPException(409, 'Cannot delete a job with sent messages or tracked replies. Preserve its audit history.')
-        contact_ids = db.execute(select(Contact.id).where(Contact.job_id == job_id)).scalars().all()
-        # Preserve immutable audit events with the deleted job ID for traceability.
-        log(db, 'imported_job_deleted', job_id, company=job.company, title=job.title,
-            contacts=len(contact_ids), unsent_outreach=len(rows))
+        sent = any(row.sent_at or row.sent_message_id or row.gmail_thread_id or row.status in
+                   ('sent', 'awaiting_reply', 'followup_scheduled', 'responded', 'finished') for row in rows)
+        if sent:
+            # Keep the job and all sent threads for reply tracking; hide from the jobs list.
+            job.status = 'archived'
+            log(db, 'job_archived_preserving_sent_history', job_id, outreach_count=len(rows))
+            return {'deleted': False, 'archived': True, 'job_id': job_id}
         for row in rows:
             if row.gmail_draft_id:
                 try:
-                    from .integrations import gmail_delete_draft
                     gmail_delete_draft(db, row.gmail_draft_id)
                 except Exception as exc:
-                    raise HTTPException(502, 'Could not remove Gmail draft; deletion aborted: ' + str(exc)[:160])
+                    # A missing/already-deleted draft is fine; other errors must be surfaced.
+                    if '404' not in str(exc) and 'not found' not in str(exc).lower():
+                        raise HTTPException(502, 'Gmail draft cleanup failed: ' + str(exc)[:200])
             db.delete(row)
+        db.flush()
+        contact_ids = db.execute(select(Contact.id).where(Contact.job_id == job_id)).scalars().all()
         for (contact_id,) in contact_ids:
             db.execute(delete(KV).where(KV.key == 'auto_rr:' + contact_id))
         db.execute(delete(Contact).where(Contact.job_id == job_id))
+        db.flush()
+        log(db, 'imported_job_deleted', job_id, company=job.company, title=job.title,
+            contacts=len(contact_ids), unsent_outreach=len(rows))
         db.delete(job)
-        return {'deleted': True, 'job_id': job_id}
+        return {'deleted': True, 'archived': False, 'job_id': job_id}
+
+
+@app.get('/api/outreach/dashboard')
+def outreach_dashboard(user: str = Depends(owner)):
+    with session() as db:
+        rows = db.execute(select(Outreach).order_by(Outreach.created_at.desc())).scalars().all()
+        jobs = {j.id: j for j in db.execute(select(Job)).scalars().all()}
+        contacts = {c.id: c for c in db.execute(select(Contact)).scalars().all()}
+        items = []
+        for row in rows:
+            job = jobs.get(row.job_id)
+            contact = contacts.get(row.contact_id)
+            replied = bool(row.last_reply_at)
+            read = get_kv(db, 'reply_read:' + row.id, '') == row.last_reply_message_id if replied else False
+            action_done = get_kv(db, 'reply_action_done:' + row.id, '') == row.last_reply_message_id if replied else False
+            items.append({'id': row.id, 'job_id': row.job_id, 'company': job.company if job else '',
+                'title': job.title if job else '', 'contact_name': contact.name if contact else '',
+                'to_email': row.to_email, 'status': row.status,
+                'sent_at': row.sent_at.isoformat() if row.sent_at else None,
+                'last_reply_at': row.last_reply_at.isoformat() if row.last_reply_at else None,
+                'last_reply_class': row.last_reply_class, 'gmail_thread_id': row.gmail_thread_id,
+                'reply_read': read, 'action_done': action_done})
+        sent = [x for x in items if x['sent_at']]
+        replied = [x for x in items if x['last_reply_at']]
+        return {'summary': {'sent': len(sent), 'replied': len(replied),
+            'unread': sum(not x['reply_read'] for x in replied),
+            'action_pending': sum(not x['action_done'] for x in replied)},
+            'items': items}
+
+
+class ReplyActionInput(BaseModel):
+    value: bool = True
+
+
+@app.put('/api/outreach/{outreach_id}/reply-read')
+def mark_reply_read(outreach_id: str, data: ReplyActionInput, user: str = Depends(owner)):
+    with session() as db:
+        row = db.get(Outreach, outreach_id)
+        if not row or not row.last_reply_message_id:
+            raise HTTPException(404, 'No tracked reply for this outreach')
+        set_kv(db, 'reply_read:' + row.id, row.last_reply_message_id if data.value else '')
+        log(db, 'reply_read_updated', row.job_id, row.id, read=data.value)
+        return {'ok': True}
+
+
+@app.put('/api/outreach/{outreach_id}/action-done')
+def mark_reply_action_done(outreach_id: str, data: ReplyActionInput, user: str = Depends(owner)):
+    with session() as db:
+        row = db.get(Outreach, outreach_id)
+        if not row or not row.last_reply_message_id:
+            raise HTTPException(404, 'No tracked reply for this outreach')
+        set_kv(db, 'reply_action_done:' + row.id, row.last_reply_message_id if data.value else '')
+        log(db, 'reply_action_updated', row.job_id, row.id, done=data.value)
+        return {'ok': True}
 
 
 @app.get('/api/automation/progress')
@@ -859,7 +920,7 @@ def import_job(data: JobInput, user: str = Depends(owner)):
         raise HTTPException(422, 'Only public HTTPS post URLs are accepted')
     score, why, gaps = ranking(data.company, data.title, data.location, data.jd, url)
     with session() as db:
-        old = db.execute(select(Job).where(Job.post_url == url)).scalar_one_or_none()
+        old = db.execute(select(Job).where(Job.post_url == url, Job.status != 'archived')).scalar_one_or_none()
         if old:
             return {'id': old.id, 'duplicate': True}
         row = Job(company=data.company, title=data.title, location=data.location, jd=data.jd,
