@@ -251,7 +251,7 @@ def overview(user: str = Depends(owner)):
                 'search_weekdays': cfg['search']['weekdays'], 'lookback_days': cfg['search']['lookback_days'],
                 'max_jobs': cfg['search']['shortlist_size'], 'send_start': cfg['email']['start'],
                 'send_end': cfg['email']['end'], 'send_time': cfg['email']['preferred_send_time'],
-                'send_enabled': cfg['email']['scheduled_sending_enabled'],
+                'send_enabled': cfg['email']['scheduled_sending_enabled'] or env('SCHEDULED_SENDING_ENABLED') == 'true',
                 'scheduler_ready': bool(env('SCHEDULER_READY') == 'true' and env('CRON_SECRET')),
                 'holidays': holidays(db),
                 'followup_enabled': cfg['email']['followup']['enabled'],
@@ -473,7 +473,7 @@ class ScheduleInput(BaseModel):
 
 @app.put('/api/outreach/{outreach_id}/schedule')
 def schedule_reviewed(outreach_id: str, data: ScheduleInput, user: str = Depends(owner)):
-    if not settings()['email']['scheduled_sending_enabled'] or env('SCHEDULER_READY') != 'true' or not env('CRON_SECRET'):
+    if not (settings()['email']['scheduled_sending_enabled'] or env('SCHEDULED_SENDING_ENABLED') == 'true') or env('SCHEDULER_READY') != 'true' or not env('CRON_SECRET'):
         raise HTTPException(409, 'Scheduled sending is not active. Configure a recurring scheduler and enable the sending safety lock first.')
     with session() as db:
         row = db.get(Outreach, outreach_id, with_for_update=True)
