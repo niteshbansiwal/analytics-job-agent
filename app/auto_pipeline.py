@@ -9,8 +9,10 @@ from .config import demo_mode, env
 from .resume_library import get_resume
 from .gemini import build_email_preview
 from .integrations import gmail_create_draft, gmail_get_draft, inspect_gmail_draft, rocketreach_lookup, rocketreach_check_status, send_telegram
-from .scheduling import schedule_slot
+from .scheduling import schedule_slot, holidays
 from .calendar_rules import next_fixed_send
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 KEY = 'atlas_auto_import_enabled'
 
@@ -113,7 +115,17 @@ def process_pending(db, limit=4):
             row.resume_b64 = base64.b64encode(pdf).decode()
             row.resume_name = item['filename']
             row.gmail_draft_id = draft_id
-            row.due_at = schedule_slot(db, next_fixed_send(now()+timedelta(minutes=3)))
+            # Find the next eligible slot using BOTH saved dashboard holidays and YAML rules.
+            candidate = now() + timedelta(minutes=4)
+            for _ in range(370):
+                slot = next_fixed_send(candidate)
+                local = slot.astimezone(ZoneInfo('Asia/Kolkata'))
+                if local.date().isoformat() not in set(holidays(db)):
+                    row.due_at = schedule_slot(db, slot)
+                    break
+                candidate = slot + timedelta(days=1)
+            if row.due_at is None:
+                raise ValueError('No eligible send slot found')
             row.status = 'scheduled'
             row.error = ''
             job.status = 'approved'
