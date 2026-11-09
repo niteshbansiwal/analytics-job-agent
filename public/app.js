@@ -125,7 +125,6 @@ async function emailPromptDialog(){
 }
 
 function scheduleDialog(id){
- if(!state.data.settings.scheduler_ready||!state.data.settings.send_enabled){toast('Scheduling is waiting for an active recurring worker and the sending safety lock.',true);return}
  const row=state.data.outreach.find(x=>x.id===id);if(!row)return;
  const date=row.due_at?new Date(row.due_at):new Date(Date.now()+86400000);
  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date);
