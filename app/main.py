@@ -793,7 +793,7 @@ async def import_spreadsheet(file: UploadFile = File(...), user: str = Depends(o
         result = import_rows(db, rows)
         from .auto_pipeline import enqueue_import
         result['automation'] = enqueue_import(db, result['job_ids'])
-        log(db, 'spreadsheet_import_finished, **{k: result[k] for k in (
+        log(db, 'spreadsheet_import_finished', **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
 
@@ -811,7 +811,7 @@ def import_pasted_csv(data: CsvImportInput, user: str = Depends(owner)):
         result = import_rows(db, rows)
         from .auto_pipeline import enqueue_import
         result['automation'] = enqueue_import(db, result['job_ids'])
-        log(db, 'pasted_csv_import_finished, **{k: result[k] for k in (
+        log(db, 'pasted_csv_import_finished', **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
 
