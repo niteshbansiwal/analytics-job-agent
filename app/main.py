@@ -794,7 +794,9 @@ async def import_spreadsheet(file: UploadFile = File(...), user: str = Depends(o
         await file.close()
     with session() as db:
         result = import_rows(db, rows)
-        log(db, 'spreadsheet_import_finished', **{k: result[k] for k in (
+        from .auto_pipeline import enqueue_import
+        result['automation'] = enqueue_import(db, result['job_ids'])
+        log(db, 'spreadsheet_import_finished, **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
 
@@ -810,7 +812,9 @@ def import_pasted_csv(data: CsvImportInput, user: str = Depends(owner)):
         raise HTTPException(422, str(exc))
     with session() as db:
         result = import_rows(db, rows)
-        log(db, 'pasted_csv_import_finished', **{k: result[k] for k in (
+        from .auto_pipeline import enqueue_import
+        result['automation'] = enqueue_import(db, result['job_ids'])
+        log(db, 'pasted_csv_import_finished, **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
 
@@ -912,8 +916,10 @@ def cron_tick(request: Request):
     with session() as db:
         # Reply monitoring FIRST so we do not follow up after a reply.
         replies = monitor_replies(db)
-        db.flush()
+        from .auto_pipeline import process_pending
+        automation = process_pending(db)
+        db.commit()
         sending = send_due(db)
-        return {'replies': replies, 'sending': sending, 'discovery': 'disabled; ChatGPT research only'}
+        return {'replies': replies, 'automation': automation, 'sending': sending, 'discovery': 'disabled; ChatGPT research only'}
 
 
