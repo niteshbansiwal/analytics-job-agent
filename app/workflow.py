@@ -219,7 +219,7 @@ def _create_followup_draft(db: Session, row: Outreach):
 
 def send_due(db: Session, *, clock: datetime | None = None) -> dict:
     cfg = settings()['email']
-    if not cfg['scheduled_sending_enabled'] or demo_mode():
+    if not (cfg['scheduled_sending_enabled'] or env('SCHEDULED_SENDING_ENABLED') == 'true') or demo_mode():
         return {'sent': 0, 'blocked': 'Scheduled sending disabled; no emails sent'}
     if not db.get(Integration, 'gmail'):
         return {'sent': 0, 'blocked': 'Gmail not connected'}
