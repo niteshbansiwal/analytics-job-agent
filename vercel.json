@@ -1,4 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "fastapi"
+  "framework": "fastapi",
+  "schedules": {
+    "atlas-automation": {
+      "schedule": "*/10 * * * *",
+      "path": "/api/cron/tick",
+      "requestMethod": "GET"
+    }
+  }
 }
