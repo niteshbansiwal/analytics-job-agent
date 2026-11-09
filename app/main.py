@@ -311,7 +311,8 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
         name = next((c.name for c in contacts if c.email), '') or (
             contacts[0].name if contacts else '')
-        result = build_email_preview(job.company, job.title, job.jd or '', name)
+        email_prompt = get_kv(db, 'email_generation_prompt')
+        result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt)
         result['resumes'] = available
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
@@ -692,7 +693,7 @@ class JobInput(BaseModel):
     title: str = Field(min_length=4, max_length=220)
     post_url: HttpUrl
     location: str = Field(default='Not stated', max_length=180)
-    jd: str = Field(default='', max_length=6000)
+    jd: str = Field(default='', max_length=12000)
     author_name: str = Field(default='', max_length=150)
     post_age: str = Field(default='Not verified', max_length=150)
 
@@ -810,6 +811,26 @@ def reschedule(outreach_id: str, user: str = Depends(owner)):
 
 class SearchPromptUpdate(BaseModel):
     prompt: str = Field(min_length=100, max_length=24000)
+
+
+class EmailPromptUpdate(BaseModel):
+    prompt: str = Field(min_length=100, max_length=6000)
+
+
+@app.get('/api/email/prompt')
+def get_email_prompt(user: str = Depends(owner)):
+    from .gemini import DEFAULT_EMAIL_PROMPT
+    with session() as db:
+        saved = get_kv(db, 'email_generation_prompt')
+    return {'prompt': saved or DEFAULT_EMAIL_PROMPT, 'customized': bool(saved)}
+
+
+@app.put('/api/email/prompt')
+def update_email_prompt(data: EmailPromptUpdate, user: str = Depends(owner)):
+    with session() as db:
+        set_kv(db, 'email_generation_prompt', data.prompt.strip())
+        log(db, 'email_prompt_updated', length=len(data.prompt))
+    return {'saved': True}
 
 
 @app.get('/api/search/prompt')
