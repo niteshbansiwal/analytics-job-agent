@@ -132,6 +132,7 @@ async function handleSheetSubmit(form){
    result=await api('/api/jobs/import-csv',{method:'POST',body:JSON.stringify({csv_text:form.querySelector('textarea').value})});
   }
   await load();
+setInterval(()=>{if(state.page==='outbox' && !document.querySelector('dialog[open]'))load()},30000);
   if(result.created){
    await showAutomationProgress();
    api('/api/automation/run-now',{method:'POST'}).then(()=>refreshAutomationProgress()).catch(e=>toast('Automation worker: '+e.message,true));
