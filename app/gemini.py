@@ -169,29 +169,8 @@ def _validated_ids(raw: str) -> list[str]:
     return ids
 
 
-_EMAIL_ADDRESS = re.compile(r'(?<![\w.+-])[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}', re.IGNORECASE)
-_WEB_URL = re.compile(r'(?i)\b(?:https?://|www\.)[^\s<>\])}]+')
-_MARKDOWN_WEB_LINK = re.compile(r'\[([^\]\n]{1,120})\]\(((?:https?://|www\.)[^)\s]+)\)', re.IGNORECASE)
-
-
-def _sanitize_ai_contact_details(value: str) -> tuple[str, bool]:
-    """Strip model-invented links and addresses without losing valid prose."""
-    original = value
-    value = _MARKDOWN_WEB_LINK.sub(lambda m: m.group(1), value)
-    value = _WEB_URL.sub('', value)
-    value = _EMAIL_ADDRESS.sub('', value)
-    clean_lines = []
-    for line in value.splitlines():
-        line = re.sub(r'(?i)\b(?:email|website|linkedin|portfolio|contact)\s*:\s*$', '', line).rstrip()
-        if line.strip() in ('-', '•', '*', '(', ')'):
-            continue
-        clean_lines.append(line)
-    value = '\n'.join(clean_lines).strip()
-    return value, value != original
-
-
-def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, list[str], bool]:
-    """Validate full Gemini email and remove unsafe model-invented contact details."""
+def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, list[str]]:
+    """Validate factual claims and format without restricting links."""
     try:
         parsed = json.loads(raw)
     except (ValueError, TypeError) as exc:
@@ -205,8 +184,6 @@ def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, li
         raise GeminiError('Gemini did not provide valid verified career fact IDs') from exc
     if not isinstance(subject, str) or not isinstance(body, str):
         raise GeminiError('Gemini did not generate a complete email')
-    subject, subject_cleaned = _sanitize_ai_contact_details(subject)
-    body, body_cleaned = _sanitize_ai_contact_details(body)
     if not 8 <= len(subject) <= 180:
         raise GeminiError('Gemini did not generate a usable subject')
     if not 120 <= len(body) <= 2800:
@@ -222,11 +199,11 @@ def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, li
     if company.casefold() not in body.casefold() and not any(
             term in body.casefold() for term in role_terms):
         raise GeminiError('Gemini draft is not sufficiently tailored to this job')
-    return subject.strip(), body.strip(), ids, (subject_cleaned or body_cleaned)
+    return subject.strip(), body.strip(), ids
 
 
 def build_email_preview(company: str, title: str, jd: str, contact_name: str = '',
-                        custom_prompt: str = '') -> dict:
+                        custom_prompt: str = '', job_post_url: str = '') -> dict:
     """Gemini authors the entire email; the saved prompt controls style.
 
     Never silently replace a failed AI draft with a generic template. The
@@ -238,6 +215,10 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         raise GeminiError('Detailed job description is missing; cannot tailor outreach reliably')
     owner_prompt = custom_prompt.strip() or DEFAULT_EMAIL_PROMPT
     prompt_source = 'custom' if custom_prompt.strip() else 'default'
+    source_url = (job_post_url or '').strip()
+    # Validate the imported source URL, never model-authored links.
+    if not re.match(r'^https?://[^/\s]+(?:/[^\s]*)?$', source_url, re.IGNORECASE):
+        source_url = ''
     prompt_fingerprint = hashlib.sha256(owner_prompt.encode('utf-8')).hexdigest()[:12]
     # Send the career facts, not personal contact information or resume PDFs.
     # The hiring contact's name is inserted locally AFTER model generation.
@@ -266,12 +247,14 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         '"Hi [FIRST_NAME]," exactly and Atlas will replace the placeholder. '
         'Sign as "Nitesh Bansiwal". Mention the attached resume only if '
         'appropriate. No markdown fences, no invented links, no invented '
-        'email addresses. Return ONLY a JSON object with three keys: '
+        'email addresses. Include the exact JOB POSTING URL below in the email when provided. '
+        'Return ONLY a JSON object with three keys: '
         '"subject" (string), "body" (complete email string), and '
         '"fact_ids" (array of 2 or 3 distinct verified fact keys used). '
         'Make the draft specific and persuasive, not a generic template.\n\n'
         'COMPANY: ' + company[:150] +
         '\nROLE: ' + title[:160] +
+        '\nJOB POSTING URL: ' + (source_url or 'Not provided') +
         '\nJOB DESCRIPTION:\n' + jd[:12000] +
         '\nVERIFIED CAREER FACTS:\n' +
         json.dumps(facts, ensure_ascii=False, indent=2)
@@ -279,7 +262,7 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     # A failed or malformed response is surfaced; it must not enter the
     # automated Gmail drafting and sending pipeline as a generic fallback.
     raw = gemini_text(prompt, json_output=True)
-    subject, body, ids, removed_unverified_contact_details = _validate_ai_email(raw, title, company)
+    subject, body, ids = _validate_ai_email(raw, title, company)
     first_name = (contact_name or '').strip().split(' ')[0]
     if (contact_name or '').strip().casefold() == 'hiring team':
         first_name = 'Hiring Team'
@@ -288,15 +271,22 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     body = body.replace('[FIRST_NAME]', first_name).replace('{{FIRST_NAME}}', first_name)
     if not re.match(r'(?i)^\s*(hi|hello|dear)\b', body):
         body = f'Hi {first_name},\n\n' + body
+    # Preserve all model-authored links. Ensure the exact original posting URL
+    # appears once, even when Gemini overlooks the configured requirement.
+    if source_url and source_url not in body:
+        signature = re.search(
+            r'(?im)\n(?:regards|best regards|thanks|thank you|sincerely|warm regards),?\s*\nNitesh Bansiwal\s*$',
+            body)
+        if signature:
+            body = body[:signature.start()] + '\n\nJob posting: ' + source_url + body[signature.start():]
+        else:
+            body += '\n\nJob posting: ' + source_url
     if 'Nitesh Bansiwal' not in body:
         body += '\n\nRegards,\nNitesh Bansiwal'
     return {
         'model': gemini_model(), 'primary_model': gemini_model(),
-        'mode': 'ai_email',
-        'warning': ('Gemini included an unverified link or email address; Atlas removed it from this draft. Review before sending.'
-                    if removed_unverified_contact_details else ''),
+        'mode': 'ai_email', 'warning': '',
         'subject': subject, 'body': body, 'selected_fact_ids': ids,
-        'removed_unverified_contact_details': removed_unverified_contact_details,
         'prompt_source': prompt_source,
         'prompt_characters': len(owner_prompt),
         'prompt_fingerprint': prompt_fingerprint,

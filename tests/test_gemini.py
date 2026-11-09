@@ -75,6 +75,44 @@ def test_model_email_not_overwritten_by_fixed_fact_bullets(monkeypatch):
     assert result['body'].count('At Plivo, I built dashboards') == 0
 
 
+def test_job_post_url_and_other_links_are_preserved(monkeypatch):
+    post = 'https://www.linkedin.com/jobs/view/987654321/'
+    body = ('Hi [FIRST_NAME],\n\nThe Visa Analytics Manager role '
+            'calls for practical analytics that improves decisions. '
+            'At American Express, I deliver field-facing analytics. '
+            'At Plivo, I developed BI dashboards for decision makers. '
+            'Review my work at https://portfolio.example.org/ '
+            'or contact me at candidate@example.org.\n\n'
+            'Regards,\nNitesh Bansiwal')
+    prompts = []
+    def fake(prompt, **kwargs):
+        prompts.append(prompt)
+        return drafted(body=body)
+    monkeypatch.setattr(gemini, 'gemini_text', fake)
+    result = gemini.build_email_preview('Visa', 'Analytics Manager', JD,
+                                        'Jane Recruiter',
+                                        'Always include the job posting link.', post)
+    assert post in prompts[0]
+    assert result['body'].count(post) == 1
+    assert 'https://portfolio.example.org/' in result['body']
+    assert 'candidate@example.org' in result['body']
+    assert result['body'].index('Job posting:') < result['body'].index('Regards,')
+
+
+def test_existing_job_post_link_is_not_duplicated(monkeypatch):
+    post = 'https://jobs.example.com/analytics-manager'
+    body = ('Hi [FIRST_NAME],\n\nThe Visa Analytics Manager role '
+            'requires hands-on SQL reporting and strong stakeholder '
+            'partnership. My American Express and Plivo analytics work '
+            'supports these needs. Here is the role: ' + post +
+            '\n\nRegards,\nNitesh Bansiwal')
+    monkeypatch.setattr(gemini, 'gemini_text',
+                        lambda *args, **kwargs: drafted(body=body))
+    result = gemini.build_email_preview('Visa', 'Analytics Manager', JD,
+                                        'Jane Recruiter', 'Include the posting.', post)
+    assert result['body'].count(post) == 1
+
+
 def test_invalid_response_fails_closed_not_generic_fallback(monkeypatch):
     monkeypatch.setattr(gemini, 'gemini_text',
                         lambda *args, **kwargs: '{"fact_ids":["made_up_experience"]}')

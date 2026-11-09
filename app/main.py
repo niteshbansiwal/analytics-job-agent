@@ -338,7 +338,7 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
             contacts[0].name if contacts else '')
         email_prompt = get_kv(db, 'email_generation_prompt')
         try:
-            result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt)
+            result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt, job.post_url)
         except GeminiError as exc:
             log(db, 'gemini_email_preview_failed', job.id, reason=str(exc)[:180],
                 custom_prompt_configured=bool(email_prompt))

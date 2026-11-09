@@ -205,7 +205,7 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
             log(db, 'auto_draft_building', job.id, row.id, contact_id=contact.id)
             item, pdf = get_resume(db, 'analytics')
             prompt = get_kv(db, 'email_generation_prompt', '')
-            preview = build_email_preview(job.company, job.title, job.jd or '', contact.name, prompt)
+            preview = build_email_preview(job.company, job.title, job.jd or '', contact.name, prompt, job.post_url)
             draft = gmail_create_draft(db, contact.email, preview['subject'], preview['body'], pdf, item['filename'])
             draft_id = draft['id']
             log(db, 'auto_gmail_draft_created', job.id, row.id, contact_id=contact.id, draft_id=draft_id)
