@@ -37,6 +37,7 @@ def test_template_round_trip():
     wb = load_workbook(io.BytesIO(raw), read_only=True)
     assert wb.sheetnames == ['Jobs', 'Instructions']
     assert list(next(wb['Jobs'].values)) == list(HEADERS)
+    assert 'jd_source_url' in HEADERS and 'contact_2_type' in HEADERS
     wb.close()
 
 
@@ -80,6 +81,29 @@ def test_contact_without_profile_or_evidence_is_omitted(db):
     assert result['created'] == 1
     assert result['contacts_created'] == 0
     assert any('contact 1 omitted' in e for e in result['errors'])
+
+
+def test_detailed_jd_and_verified_poster_import(db):
+    row = sample_row()
+    row.update({'jd': 'Lead credit risk analytics and portfolio reporting. ' * 8,
+                'jd_source_url': row['post_url'], 'jd_access_status': 'full',
+                'author_name': 'Sample Contact',
+                'author_url': row['contact_1_linkedin'], 'contact_1_type': 'poster'})
+    result = import_rows(db, [(2, row)])
+    assert result['created'] == 1
+    contact = db.execute(select(Contact)).scalar_one()
+    assert contact.relationship == 'poster'
+    assert contact.category == 'Original job poster'
+    assert 'credit risk analytics' in db.execute(select(Job)).scalar_one().jd
+
+
+def test_full_jd_requires_source_detail(db):
+    row = sample_row()
+    row['jd_access_status'] = 'full'
+    row['jd'] = 'Short summary'
+    result = import_rows(db, [(2, row)])
+    assert result['created'] == 0
+    assert any('full JD' in error for error in result['errors'])
 
 
 def test_invalid_headers_rejected():
