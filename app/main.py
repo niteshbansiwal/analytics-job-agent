@@ -903,6 +903,18 @@ def update_search_prompt(data: SearchPromptUpdate, user: str = Depends(owner)):
     return {'saved': True, 'characters': len(data.prompt)}
 
 
+@app.post('/api/automation/run-now')
+def run_automation_now(user: str = Depends(owner)):
+    """Owner-authenticated recovery and diagnostic trigger for queued imports."""
+    if demo_mode():
+        raise HTTPException(409, 'Automation unavailable in demo mode')
+    from .auto_pipeline import process_pending
+    with session() as db:
+        result = process_pending(db, limit=3)
+        db.commit()
+        return {'automation': result}
+
+
 @app.get('/api/cron/tick')
 def cron_tick(request: Request):
     secret = env('CRON_SECRET')
