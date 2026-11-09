@@ -3,7 +3,7 @@
   "framework": "fastapi",
   "schedules": {
     "atlas-automation": {
-      "schedule": "* * * * *",
+      "schedule": "*/15 * * * *",
       "path": "/api/cron/tick",
       "requestMethod": "GET"
     }
