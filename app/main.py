@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from .config import ROOT, env, settings, demo_mode
 from .db import session, engine, Job, Contact, Outreach, Integration, Event, get_kv, set_kv, seed_demo, log, now
 from .calendar_rules import next_fixed_send
-from .scheduling import holidays, schedule_slot, save_holidays
+from .scheduling import holidays, schedule_slot, save_holidays, manual_schedule_slot
 from .integrations import (google_oauth_url, google_code_exchange, google_userinfo, save_google_refresh,
     rocketreach_lookup, rocketreach_check_status)
 from .workflow import approve_job, prepare_outreach, cancel_outreach, monitor_replies, send_due
@@ -477,12 +477,13 @@ def schedule_reviewed(outreach_id: str, data: ScheduleInput, user: str = Depends
         if not db.get(Integration, 'gmail'):
             raise HTTPException(409, 'Gmail is disconnected.')
         try:
-            due = schedule_slot(db, data.due_at)
+            due = manual_schedule_slot(data.due_at)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         row.due_at = due
         row.status = 'scheduled'
-        log(db, 'reviewed_email_scheduled', row.job_id, row.id, due_at=due)
+        set_kv(db, 'manual_schedule:' + row.id, 'true')
+        log(db, 'reviewed_email_scheduled', row.job_id, row.id, due_at=due, mode='manual')
         return {'outreach': json_outreach(row), 'scheduled': True}
 
 @app.post('/api/outreach/{outreach_id}/unschedule')
