@@ -49,6 +49,17 @@ def test_gemini_invalid_response_falls_back_without_inventing_facts(monkeypatch)
     assert result['warning']
 
 
+def test_risk_role_keeps_verified_fraud_achievement_when_model_misses_it(monkeypatch):
+    monkeypatch.setattr(gemini, 'gemini_text',
+        lambda prompt, **kwargs: '{"fact_ids":["dashboards","stakeholders"]}')
+    result = gemini.build_email_preview('BharatPe', 'Senior Manager, Risk Analytics',
+                                        'Credit risk portfolio analytics', 'Ishika Jain')
+    assert result['mode'] == 'ai_email'
+    assert result['selected_fact_ids'][0] == 'plivo_fraud'
+    assert 'At Plivo, I led an SMS fraud detection tool' in result['body']
+    assert 'Hi Ishika,' in result['body']
+
+
 
 def test_timeout_uses_facts_only_draft_without_repeat_api_call(monkeypatch):
     calls = []
