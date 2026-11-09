@@ -287,7 +287,7 @@ def import_rows(db, rows):
         'possible_duplicates': possible_duplicates,
         'duplicate_candidates': duplicate_candidates[:20],
         'contacts_created': contacts_created, 'rows_read': len(rows),
-        'job_ids': ids[:20], 'errors': errors[:30],
+        'job_ids': ids, 'errors': errors[:30],
         'note': 'All spreadsheet claims remain unverified. No messages or outreach were sent.',
     }
 
