@@ -206,6 +206,7 @@ async function geminiPreview(id){
    '<button type="button" class="btn btn-ghost" id="preview-reviewed-resume" style="margin-top:16px">Preview selected resume PDF</button>'+
    contactPicker+replace+
    '<label style="display:block;margin-top:14px;font-size:13px"><input type="checkbox" id="review-confirm"> I have reviewed the recipient, email and selected PDF.</label>'+
+   '<div id="draft-error" role="alert" style="display:none;margin-top:12px;padding:10px;border:1px solid #efd3d3;border-radius:8px;color:#a24d55"></div>'+
    '<button type="button" class="btn btn-dark" id="create-reviewed-draft" '+(!contacts.length?'disabled':'')+' style="margin-top:14px;width:100%">Create verified Gmail draft with PDF — do not send</button>'+
    '<p class="hint">Gmail draft creation requires explicit confirmation. Atlas does not send or schedule this draft.</p>');
   $('form-dialog').classList.add('review-modal');
@@ -237,8 +238,9 @@ async function previewReviewedResume(){
 async function createReviewedDraft(){
  const button=$('create-reviewed-draft');
  try{
+  const error=$('draft-error');if(error)error.style.display='none';
   const selection=selectedResume();
-  if(!reviewedPdfPreviewed)throw Error('Preview the selected resume PDF before creating a Gmail draft.');
+  if(!reviewedPdfPreviewed)throw Error('Click Preview selected resume PDF, review the opened file, then click Create draft again.');
   if(!$('review-confirm')?.checked)throw Error('Confirm you reviewed the recipient, email and resume.');
   const job=jobOf(reviewedJobId);
   const contact=job?.contacts.find(c=>c.id===$('reviewed-contact')?.value);
@@ -261,7 +263,7 @@ async function createReviewedDraft(){
    '<p><strong>Attachment:</strong> '+escapeHtml(result.resume_filename)+'</p>'+
    '<p class="hint">No email was sent or scheduled. Open Gmail to review the draft before sending it manually.</p>'+
    '<a class="btn btn-dark" href="'+safeUrl(result.gmail_url)+'" target="_blank" rel="noreferrer">Open Gmail drafts ↗</a>');
- }catch(e){toast('Draft not created: '+e.message,true)}
+ }catch(e){const error=$('draft-error');if(error){error.textContent='Draft not created: '+e.message;error.style.display='block';error.scrollIntoView({block:'nearest'});}else toast('Draft not created: '+e.message,true)}
  finally{if(button)button.disabled=false;}
 }
 async function mutate(path){try{await api(path,{method:'POST'});await load();toast('Updated successfully.')}catch(e){toast(e.message,true)}}
