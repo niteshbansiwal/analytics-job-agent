@@ -64,8 +64,15 @@ def process_pending(db, limit=4):
         if not job or job.status in ('rejected', 'duplicate_review'):
             _failure(db, row, 'Job rejected or possible duplicate')
             continue
-        contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
-        contact = next((c for c in contacts if c.email and re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', c.email)), None)
+        contact = db.get(Contact, row.contact_id)
+        if not contact:
+            _failure(db, row, 'Contact no longer exists')
+            continue
+        log(db, 'auto_contact_processing', job.id, row.id, contact_id=contact.id, contact_name=contact.name)
+        if contact.email and re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', contact.email):
+            log(db, 'auto_contact_email_found', job.id, row.id, contact_id=contact.id, source='spreadsheet')
+        else:
+            contact = None
         if not contact:
             # Paid RocketReach lookups require a concrete person profile; never guess emails.
             if not env('ROCKETREACH_API_KEY'):
