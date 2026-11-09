@@ -499,6 +499,28 @@ def unschedule_reviewed(outreach_id: str, user: str = Depends(owner)):
         log(db, 'reviewed_email_unscheduled', row.job_id, row.id)
         return {'outreach': json_outreach(row)}
 
+@app.post('/api/email/replies/check-now')
+def check_replies_now(user: str = Depends(owner)):
+    if demo_mode():
+        raise HTTPException(409, 'Reply monitoring unavailable in demo mode')
+    with session() as db:
+        result = monitor_replies(db)
+        db.commit()
+        return {'replies': result}
+
+
+@app.post('/api/integrations/telegram/test')
+def test_telegram_notification(user: str = Depends(owner)):
+    from .integrations import send_telegram
+    if not env('TELEGRAM_BOT_TOKEN') or not env('TELEGRAM_CHAT_ID'):
+        raise HTTPException(409, 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in Vercel Production environment, then redeploy.')
+    try:
+        result = send_telegram('Atlas test notification: Telegram is connected and ready for reply alerts.')
+    except Exception as exc:
+        raise HTTPException(502, 'Telegram test failed: ' + str(exc)[:250])
+    return {'sent': bool(result.get('sent'))}
+
+
 class SchedulerConfigInput(BaseModel):
     interval_minutes: Literal[5, 10, 15, 30, 60]
 
