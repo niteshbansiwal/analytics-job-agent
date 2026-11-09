@@ -219,3 +219,18 @@ def test_email_model_uses_minimal_thinking_and_legacy_uses_low(monkeypatch):
         assert payload['generationConfig']['thinkingConfig'] == {
             'thinkingLevel': 'MINIMAL' if model == gemini.EMAIL_MODEL else 'LOW'}
         assert payload['generationConfig']['responseMimeType'] == 'application/json'
+
+
+def test_numbers_in_job_links_are_not_treated_as_career_claims(monkeypatch):
+    post = 'https://www.linkedin.com/jobs/view/123456789012345'
+    body = ('Hi [FIRST_NAME],\n\nThe Visa Analytics Manager role '
+            'emphasizes practical SQL analytics and decision support. '
+            'At American Express, I lead analytics delivery, and at Plivo '
+            'I built dashboards for commercial stakeholders. '
+            'This is the role I am referring to: ' + post +
+            '\n\nRegards,\nNitesh Bansiwal')
+    monkeypatch.setattr(gemini, 'gemini_text',
+                        lambda *args, **kwargs: drafted(body=body))
+    result = gemini.build_email_preview('Visa', 'Analytics Manager', JD,
+                                        'Jane Recruiter', 'Include the job link.', post)
+    assert post in result['body']

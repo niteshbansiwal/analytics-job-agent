@@ -183,3 +183,84 @@ def test_lookup_state_persists_and_contact_email_only_on_completion():
         assert contact.email_status == 'rocketreach_unverified'
         assert _rocketreach_state(db, contact.id)['status'] == 'returned'
     engine.dispose()
+
+
+def test_auto_enrichment_reuses_manual_provider_id(monkeypatch):
+    """Automatic flow must recheck, not charge for a duplicate person lookup."""
+    import json
+    from app import auto_pipeline
+    from app.db import Outreach, set_kv
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        job = Job(company='Example Payments', title='Manager Analytics',
+                  source='test', post_url='https://example.com/jobs/1')
+        db.add(job)
+        db.flush()
+        contact = Contact(job_id=job.id, name='Jane Analyst', linkedin_url=LINKEDIN)
+        db.add(contact)
+        db.flush()
+        row = Outreach(job_id=job.id, contact_id=contact.id, status='pending_contact')
+        db.add(row)
+        db.flush()
+        set_kv(db, 'atlas_auto_import_enabled', 'true')
+        set_kv(db, 'rocketreach:' + contact.id, json.dumps({
+            'status': 'awaiting_email', 'provider_id': '456',
+            'lookup_count': 1, 'check_count': 0,
+            'next_check_at': '2020-01-01T00:00:00+00:00',
+        }))
+        calls = {'lookup': 0, 'check': 0}
+        def lookup(url):
+            calls['lookup'] += 1
+            raise AssertionError('Must not start another paid lookup')
+        def check(pid, url):
+            calls['check'] += 1
+            assert pid == '456'
+            return {'status': 'returned', 'provider_id': '456',
+                    'email': 'jane@company.com',
+                    'email_status': 'rocketreach_work_email'}
+        monkeypatch.setattr(auto_pipeline, 'demo_mode', lambda: False)
+        monkeypatch.setattr(auto_pipeline, 'env', lambda key: 'test-key')
+        monkeypatch.setattr(auto_pipeline, 'rocketreach_lookup', lookup)
+        monkeypatch.setattr(auto_pipeline, 'rocketreach_check_status', check)
+        result = auto_pipeline.process_pending(db, limit=1)
+        assert result['processed'] == 1
+        assert calls == {'lookup': 0, 'check': 1}
+        assert contact.email == 'jane@company.com'
+        assert _rocketreach_state(db, contact.id)['status'] == 'returned'
+    engine.dispose()
+
+
+def test_auto_enrichment_waits_for_existing_lookup_without_recharging(monkeypatch):
+    import json
+    from app import auto_pipeline
+    from app.db import Outreach, set_kv
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        job = Job(company='Example Payments', title='Manager Analytics',
+                  source='test', post_url='https://example.com/jobs/1')
+        db.add(job)
+        db.flush()
+        contact = Contact(job_id=job.id, name='Jane Analyst', linkedin_url=LINKEDIN)
+        db.add(contact)
+        db.flush()
+        db.add(Outreach(job_id=job.id, contact_id=contact.id, status='pending_contact'))
+        db.flush()
+        set_kv(db, 'atlas_auto_import_enabled', 'true')
+        set_kv(db, 'rocketreach:' + contact.id, json.dumps({
+            'status': 'pending', 'provider_id': '456',
+            'lookup_count': 1, 'check_count': 0,
+            'next_check_at': '2099-01-01T00:00:00+00:00',
+        }))
+        monkeypatch.setattr(auto_pipeline, 'demo_mode', lambda: False)
+        monkeypatch.setattr(auto_pipeline, 'env', lambda key: 'test-key')
+        monkeypatch.setattr(auto_pipeline, 'rocketreach_lookup',
+                            lambda *args: (_ for _ in ()).throw(AssertionError('lookup')))
+        monkeypatch.setattr(auto_pipeline, 'rocketreach_check_status',
+                            lambda *args: (_ for _ in ()).throw(AssertionError('check')))
+        result = auto_pipeline.process_pending(db, limit=1)
+        assert result['processed'] == 1
+        assert result['scheduled'] == 0
+        assert _rocketreach_state(db, contact.id)['provider_id'] == '456'
+    engine.dispose()

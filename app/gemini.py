@@ -191,7 +191,11 @@ def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, li
     # Any verified fact can support a quantified claim, even when it is not
     # one of the two or three highlighted fact IDs selected by the model.
     approved_numbers = set(re.findall(r'\d[\d,.]*%?', ' '.join(CAREER_FACTS.values())))
-    used_numbers = set(re.findall(r'\d[\d,.]*%?', body))
+    # URLs and addresses are allowed by the owner's email prompt. Digits in
+    # job-post links, portfolio URLs and email usernames are NOT career claims.
+    claims_only = re.sub(r'(?i)\b(?:https?://|www\.)[^\s<>]+', '', body)
+    claims_only = re.sub(r'(?i)[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '', claims_only)
+    used_numbers = set(re.findall(r'\d[\d,.]*%?', claims_only))
     if not used_numbers.issubset(approved_numbers):
         raise GeminiError('Gemini added an unsupported numerical career claim')
     role_terms = [w.lower() for w in re.findall(r'[A-Za-z]{5,}', title)

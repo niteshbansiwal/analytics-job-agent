@@ -120,7 +120,8 @@ def workspace():
 @app.get('/api/health')
 def health():
     return {'ok': True, 'demo': demo_mode(), 'version': '0.2.0',
-            'commit': env('VERCEL_GIT_COMMIT_SHA', 'local'), 'resume_mode': 'fixed_pdf'}
+            'commit': env('VERCEL_GIT_COMMIT_SHA', 'local'), 'resume_mode': 'fixed_pdf',
+            'email_url_policy': 'preserve_all', 'rocketreach_state': 'shared'}
 
 @app.get('/api/auth/status')
 def auth_status(request: Request):

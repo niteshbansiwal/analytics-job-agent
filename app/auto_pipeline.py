@@ -103,7 +103,7 @@ def recover_rejected_email_links(db, *, contact_ids=None):
 
     This never touches a Gmail draft or sent message. The import previously
     authorized automation, and a subsequent worker tick may regenerate the
-    failed email with the fixed sanitizer. Other failures stay held.
+    failed email with the current URL-preserving generator. Other failures stay held.
     """
     query = select(Outreach).where(
         Outreach.status == 'needs_attention',
@@ -118,7 +118,7 @@ def recover_rejected_email_links(db, *, contact_ids=None):
     for row in rows:
         if row.gmail_draft_id or row.sent_at:
             continue
-        retry_key = 'auto_email_link_retry:' + row.id
+        retry_key = 'auto_email_link_retry_v2:' + row.id
         if get_kv(db, retry_key, ''):
             continue
         set_kv(db, retry_key, now().isoformat())
@@ -171,32 +171,71 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
             if not candidate:
                 _failure(db, row, 'No usable LinkedIn person profile for enrichment')
                 continue
-            state_key = 'auto_rr:' + candidate.id
-            state = json.loads(get_kv(db, state_key, '{}'))
+            # Share the same persisted RocketReach lookup state used by manual
+            # enrichment and the dashboard. Never start a second paid lookup
+            # when the provider has already issued a person ID.
+            from .main import _rocketreach_state, _save_rocketreach_result
+            state = _rocketreach_state(db, candidate.id)
+            if not state:
+                # Migrate in-flight lookups created by older auto workers.
+                try:
+                    legacy = json.loads(get_kv(db, 'auto_rr:' + candidate.id, '{}'))
+                except (ValueError, TypeError):
+                    legacy = {}
+                if legacy.get('provider_id') and legacy.get('status') in ('pending', 'awaiting_email'):
+                    state = {
+                        'status': legacy['status'],
+                        'provider_id': str(legacy['provider_id']),
+                        'lookup_count': 1, 'check_count': 0,
+                        'next_check_at': now().isoformat(),
+                        'detail': 'Continuing an existing automated RocketReach lookup',
+                    }
+                    set_kv(db, 'rocketreach:' + candidate.id, json.dumps(state))
+                    log(db, 'auto_rocketreach_legacy_lookup_migrated', job.id, row.id,
+                        contact_id=candidate.id)
             try:
-                log(db, 'auto_contact_email_search', job.id, row.id, contact_id=candidate.id, provider='RocketReach')
-                if not state:
-                    result = rocketreach_lookup(candidate.linkedin_url)
-                elif state.get('provider_id') and state.get('status') in ('pending','awaiting_email'):
+                if state.get('status') in ('pending', 'awaiting_email') and state.get('provider_id'):
+                    next_check = state.get('next_check_at', '')
+                    if next_check:
+                        try:
+                            if now() < datetime.fromisoformat(next_check):
+                                log(db, 'auto_contact_enrichment_waiting', job.id, row.id,
+                                    contact_id=candidate.id, next_check_at=next_check)
+                                continue
+                        except ValueError:
+                            pass
+                    log(db, 'auto_contact_enrichment_check', job.id, row.id,
+                        contact_id=candidate.id, provider='RocketReach',
+                        provider_id=state['provider_id'])
                     result = rocketreach_check_status(state['provider_id'], candidate.linkedin_url)
+                    status = _save_rocketreach_result(db, candidate, result, is_check=True)
+                elif not state:
+                    log(db, 'auto_contact_email_search', job.id, row.id,
+                        contact_id=candidate.id, provider='RocketReach')
+                    result = rocketreach_lookup(candidate.linkedin_url)
+                    status = _save_rocketreach_result(db, candidate, result, is_check=False)
                 else:
-                    _failure(db, row, 'RocketReach did not return a professional email')
+                    # Existing lookup is terminal or requires manual attention.
+                    # Never initiate a duplicate paid lookup automatically.
+                    _failure(db, row, 'RocketReach needs review: ' +
+                             str(state.get('status', 'unknown')))
                     continue
-                state = {'status': result.get('status','api_error'), 'provider_id': str(result.get('provider_id',''))}
-                set_kv(db, state_key, json.dumps(state))
-                if result.get('status') == 'returned' and result.get('email'):
-                    candidate.email = result['email']
-                    candidate.email_status = result.get('email_status','rocketreach_unverified')
+                if status.get('status') == 'returned' and candidate.email:
                     contact = candidate
-                    log(db, 'auto_contact_email_found', job.id, row.id, contact_id=candidate.id, source='RocketReach')
-                elif result.get('status') in ('pending','awaiting_email'):
-                    log(db, 'auto_contact_enrichment_pending', job.id, row.id, contact_id=candidate.id)
+                    log(db, 'auto_contact_email_found', job.id, row.id,
+                        contact_id=candidate.id, source='RocketReach')
+                elif status.get('status') in ('pending', 'awaiting_email'):
+                    log(db, 'auto_contact_enrichment_pending', job.id, row.id,
+                        contact_id=candidate.id,
+                        next_check_at=status.get('next_check_at', ''))
                     continue
                 else:
-                    _failure(db, row, 'RocketReach lookup failed: '+str(result.get('status')))
+                    _failure(db, row, 'RocketReach lookup needs review: ' +
+                             str(status.get('status', 'unknown')) + ' — ' +
+                             str(status.get('detail', ''))[:110])
                     continue
             except Exception as exc:
-                _failure(db, row, 'RocketReach error: '+type(exc).__name__)
+                _failure(db, row, 'RocketReach error: ' + type(exc).__name__)
                 continue
         if not db.get(Integration, 'gmail'):
             _failure(db, row, 'Gmail is not connected')
