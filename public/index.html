@@ -162,7 +162,7 @@ function showAutomationProgress(batchId=state.importBatchId){
  }
  state.importBatchId=batchId;
  stopAutomationProgress();
- modal('<div style="min-width:min(600px,75vw);max-width:850px"><h2>Excel upload · live progress</h2><p class="hint">Only this upload is shown. Closing this popup does not stop RocketReach enrichment, Gmail drafts, or scheduled sends. Vercel continues processing in the background.</p><div id="atlas-progress-content" aria-live="polite">Loading this upload…</div><div style="display:flex;gap:10px;margin-top:15px"><button type="button" class="btn btn-ghost" data-action="progress-refresh">Refresh now</button><button type="button" class="btn btn-dark" data-action="progress-close">Close tracker</button></div></div>');
+ modal('<div style="min-width:min(600px,75vw);max-width:850px"><h2>Excel upload · live progress</h2><p class="hint">Only this upload is shown. Enrichment and Gmail drafting start immediately after upload. Closing this popup does not stop backend processing; Vercel scheduling remains the recovery and sending mechanism.</p><div id="atlas-progress-content" aria-live="polite">Loading this upload…</div><div style="display:flex;gap:10px;margin-top:15px"><button type="button" class="btn btn-ghost" data-action="progress-refresh">Refresh now</button><button type="button" class="btn btn-dark" data-action="progress-close">Close tracker</button></div></div>');
  refreshAutomationProgress();
  atlasProgressTimer=setInterval(function(){
   if(!$('form-dialog').open||!$('atlas-progress-content')){stopAutomationProgress();return;}
@@ -257,8 +257,20 @@ async function handleSheetSubmit(form){
   localStorage.setItem('atlas_last_import_batch',result.batch_id);
   closeModal();
   showAutomationProgress(result.batch_id);
+  // Start an independent server-side request immediately; closing the tracker
+  // does not cancel it. FastAPI BackgroundTasks is the primary trigger,
+  // while the Vercel scheduler remains the durable retry path.
+  fetch('/api/imports/'+encodeURIComponent(result.batch_id)+'/process-now',{
+   method:'POST',credentials:'same-origin'
+  }).then(async response=>{
+   if(!response.ok){
+    const body=await response.json().catch(()=>({}));
+    throw Error(body.detail||'Immediate worker request failed');
+   }
+   if($('atlas-progress-content'))refreshAutomationProgress();
+  }).catch(error=>toast('Immediate processing request: '+error.message,true));
   load();
-  toast(result.created+' jobs imported; '+result.contacts_created+' contacts added. Vercel worker will process the queue.');
+  toast(result.created+' jobs imported; '+result.contacts_created+' contacts added. Enrichment and drafting started immediately.');
  }catch(err){
   const message=escapeHtml(err.message||'Unable to import this file.');
   modal('<h2>Import validation failed</h2><p>'+message+'</p><p>Atlas accepts the Jobs template and ChatGPT Approved Jobs export.</p><button class="btn btn-dark" type="button" id="retry-sheet-import">Try another file</button>');

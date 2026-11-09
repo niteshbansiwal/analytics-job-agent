@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
-from fastapi import FastAPI, HTTPException, Depends, Request, Response, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, Request, Response, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict
@@ -1039,7 +1039,7 @@ def spreadsheet_template(user: str = Depends(owner)):
 
 
 @app.post('/api/jobs/import-spreadsheet')
-async def import_spreadsheet(file: UploadFile = File(...), user: str = Depends(owner)):
+async def import_spreadsheet(background_tasks: BackgroundTasks, file: UploadFile = File(...), user: str = Depends(owner)):
     if demo_mode():
         raise HTTPException(409, 'Real spreadsheet import is disabled in demo mode.')
     from .spreadsheet_import import MAX_FILE_BYTES, parse_file, import_rows
@@ -1059,13 +1059,16 @@ async def import_spreadsheet(file: UploadFile = File(...), user: str = Depends(o
         scope = save_import_batch(db, result, filename, started_at)
         from .auto_pipeline import enqueue_import
         result['automation'] = enqueue_import(db, result['job_ids'], scope)
+        from .auto_pipeline import process_import_batch
+        background_tasks.add_task(process_import_batch, result['batch_id'])
+        result['automation']['started_immediately'] = True
         log(db, 'spreadsheet_import_finished', **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
 
 
 @app.post('/api/jobs/import-csv')
-def import_pasted_csv(data: CsvImportInput, user: str = Depends(owner)):
+def import_pasted_csv(data: CsvImportInput, background_tasks: BackgroundTasks, user: str = Depends(owner)):
     if demo_mode():
         raise HTTPException(409, 'Real spreadsheet import is disabled in demo mode.')
     from .spreadsheet_import import parse_csv, import_rows
@@ -1079,6 +1082,9 @@ def import_pasted_csv(data: CsvImportInput, user: str = Depends(owner)):
         scope = save_import_batch(db, result, 'Pasted CSV', started_at)
         from .auto_pipeline import enqueue_import
         result['automation'] = enqueue_import(db, result['job_ids'], scope)
+        from .auto_pipeline import process_import_batch
+        background_tasks.add_task(process_import_batch, result['batch_id'])
+        result['automation']['started_immediately'] = True
         log(db, 'pasted_csv_import_finished', **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
@@ -1169,6 +1175,18 @@ def update_search_prompt(data: SearchPromptUpdate, user: str = Depends(owner)):
         set_kv(db, 'scheduled_prompt_override', data.prompt.strip())
         log(db, 'search_prompt_updated', length=len(data.prompt))
     return {'saved': True, 'characters': len(data.prompt)}
+
+
+@app.post('/api/imports/{batch_id}/process-now')
+def process_uploaded_batch_now(batch_id: str, user: str = Depends(owner)):
+    """Immediately process only this upload, independent of the cron schedule."""
+    if not re.fullmatch(r'[0-9a-f]{32}', batch_id):
+        raise HTTPException(404, 'Upload batch not found')
+    with session() as db:
+        if not get_kv(db, 'import_batch:' + batch_id, ''):
+            raise HTTPException(404, 'Upload batch not found')
+    from .auto_pipeline import process_import_batch
+    return {'automation': process_import_batch(batch_id)}
 
 
 @app.post('/api/automation/run-now')

@@ -2,6 +2,7 @@
 import base64
 import json
 import re
+import time
 from datetime import timedelta
 from sqlalchemy import select
 from .db import Job, Contact, Outreach, Integration, get_kv, set_kv, log, now
@@ -55,13 +56,20 @@ def _failure(db, row, message):
     except Exception:
         pass
 
-def process_pending(db, limit=4):
+def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     """Idempotent across successful drafts; unresolved contact lookup is retried on later ticks."""
     if demo_mode() or not enabled(db):
         return {'processed': 0, 'scheduled': 0}
-    first = db.execute(select(Outreach.job_id).where(Outreach.status == 'pending_contact').order_by(Outreach.created_at, Outreach.id).limit(1)).scalar_one_or_none()
-    if first is None: return {'processed': 0, 'scheduled': 0}
-    rows = db.execute(select(Outreach).where(Outreach.status == 'pending_contact', Outreach.job_id == first).order_by(Outreach.created_at, Outreach.id).limit(limit).with_for_update(skip_locked=True)).scalars().all()
+    # Never let an unresolved contact on an old job block later jobs.
+    query = select(Outreach).where(Outreach.status == 'pending_contact')
+    if contact_ids is not None:
+        if not contact_ids:
+            return {'processed': 0, 'scheduled': 0, 'outreach_ids': []}
+        query = query.where(Outreach.contact_id.in_(contact_ids))
+    if exclude_ids:
+        query = query.where(Outreach.id.not_in(exclude_ids))
+    rows = db.execute(query.order_by(Outreach.created_at, Outreach.id)
+                      .limit(limit).with_for_update(skip_locked=True)).scalars().all()
     scheduled = 0
     for row in rows:
         job = db.get(Job, row.job_id)
@@ -154,4 +162,41 @@ def process_pending(db, limit=4):
             log(db, 'auto_email_drafted_and_scheduled', job.id, row.id, contact_id=contact.id, draft_id=draft_id, due_at=row.due_at)
         except Exception as exc:
             _failure(db, row, 'Draft/schedule error: '+type(exc).__name__+': '+str(exc)[:150])
-    return {'processed': len(rows), 'scheduled': scheduled}
+    return {'processed': len(rows), 'scheduled': scheduled, 'outreach_ids': [row.id for row in rows]}
+
+
+def process_import_batch(batch_id, *, max_seconds=230):
+    """Run a newly uploaded batch immediately after the upload response.
+
+    Work is saved after every contact; the Vercel scheduler remains the
+    recovery path for interrupted work and RocketReach pending results.
+    """
+    from .db import session
+    with session() as db:
+        raw = get_kv(db, 'import_batch:' + batch_id, '')
+        if not raw:
+            return {'error': 'Unknown upload batch'}
+        scope = json.loads(raw).get('contacts_by_job', {})
+        contact_ids = list(dict.fromkeys(cid for ids in scope.values() for cid in ids))
+        log(db, 'import_batch_worker_started', batch_id=batch_id, contacts=len(contact_ids))
+    processed = set()
+    scheduled = 0
+    started = time.monotonic()
+    try:
+        while time.monotonic() - started < max_seconds:
+            with session() as db:
+                result = process_pending(db, limit=1, contact_ids=contact_ids, exclude_ids=processed)
+                if not result['processed']:
+                    break
+                processed.update(result['outreach_ids'])
+                scheduled += result['scheduled']
+        with session() as db:
+            log(db, 'import_batch_worker_finished', batch_id=batch_id,
+                processed=len(processed), scheduled=scheduled,
+                time_budget_exhausted=(time.monotonic()-started >= max_seconds))
+        return {'processed': len(processed), 'scheduled': scheduled}
+    except Exception as exc:
+        with session() as db:
+            log(db, 'import_batch_worker_error', batch_id=batch_id,
+                error=type(exc).__name__ + ': ' + str(exc)[:300])
+        raise
