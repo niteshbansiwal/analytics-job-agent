@@ -249,6 +249,9 @@ def overview(user: str = Depends(owner)):
                 'send_end': cfg['email']['end'], 'send_time': cfg['email']['preferred_send_time'],
                 'send_enabled': True,
                 'scheduler_ready': bool(env('CRON_SECRET')),
+                'scheduler_interval_minutes': int(get_kv(db, 'scheduler_interval_minutes', '5')),
+                'scheduler_last_tick': get_kv(db, 'scheduler_last_tick', ''),
+                'scheduler_last_result': get_kv(db, 'scheduler_last_result', ''),
                 'auto_import_enabled': get_kv(db, 'atlas_auto_import_enabled', '') == 'true',
                 'holidays': holidays(db),
                 'followup_enabled': cfg['email']['followup']['enabled'],
@@ -495,6 +498,28 @@ def unschedule_reviewed(outreach_id: str, user: str = Depends(owner)):
         row.status, row.due_at = 'draft_ready', None
         log(db, 'reviewed_email_unscheduled', row.job_id, row.id)
         return {'outreach': json_outreach(row)}
+
+class SchedulerConfigInput(BaseModel):
+    interval_minutes: Literal[5, 10, 15, 30, 60]
+
+
+@app.put('/api/email/scheduler')
+def update_scheduler_config(data: SchedulerConfigInput, user: str = Depends(owner)):
+    with session() as db:
+        set_kv(db, 'scheduler_interval_minutes', str(data.interval_minutes))
+        log(db, 'scheduler_interval_updated', minutes=data.interval_minutes)
+        return {'interval_minutes': data.interval_minutes, 'base_worker_minutes': 5}
+
+
+@app.post('/api/email/scheduler/check-now')
+def check_scheduler_now(user: str = Depends(owner)):
+    if demo_mode():
+        raise HTTPException(409, 'Sending unavailable in demo mode')
+    with session() as db:
+        result = send_due(db)
+        log(db, 'manual_scheduler_check', **result)
+        return {'sending': result}
+
 
 class HolidaysInput(BaseModel):
     dates: list[str] = Field(max_length=200)
@@ -986,12 +1011,37 @@ def cron_tick(request: Request):
     if demo_mode():
         return {'status': 'demo_mode', 'note': 'No discovery, sending or Gmail monitoring in demo'}
     with session() as db:
-        # Reply monitoring FIRST so we do not follow up after a reply.
-        replies = monitor_replies(db)
+        from datetime import timedelta
         from .auto_pipeline import process_pending
-        automation = process_pending(db)
-        db.commit()
-        sending = send_due(db)
-        return {'replies': replies, 'automation': automation, 'sending': sending, 'discovery': 'disabled; ChatGPT research only'}
-
-
+        tick_at = now()
+        interval = int(get_kv(db, 'scheduler_interval_minutes', '5'))
+        previous = get_kv(db, 'scheduler_last_processed', '')
+        should_process = not previous or (tick_at - datetime.fromisoformat(previous)).total_seconds() >= interval * 60 - 15
+        results = {'replies': {'skipped': True}, 'automation': {'skipped': True}, 'sending': {'skipped': True}}
+        # Always check for due manually scheduled emails on every 5-minute heartbeat.
+        # A failure in reply monitoring must never prevent scheduled sending.
+        try:
+            results['sending'] = send_due(db)
+        except Exception as exc:
+            db.rollback()
+            results['sending'] = {'error': str(exc)[:300]}
+            log(db, 'scheduler_send_error', error=str(exc)[:300])
+        if should_process:
+            try:
+                results['replies'] = monitor_replies(db)
+            except Exception as exc:
+                db.rollback()
+                results['replies'] = {'error': str(exc)[:300]}
+                log(db, 'scheduler_reply_error', error=str(exc)[:300])
+            try:
+                results['automation'] = process_pending(db)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                results['automation'] = {'error': str(exc)[:300]}
+                log(db, 'scheduler_automation_error', error=str(exc)[:300])
+            set_kv(db, 'scheduler_last_processed', tick_at.isoformat())
+        set_kv(db, 'scheduler_last_tick', tick_at.isoformat())
+        set_kv(db, 'scheduler_last_result', json.dumps(results, default=str)[:3000])
+        log(db, 'scheduler_tick', **results)
+        return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 5}
