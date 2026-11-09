@@ -264,3 +264,8 @@ def test_auto_enrichment_waits_for_existing_lookup_without_recharging(monkeypatc
         assert result['scheduled'] == 0
         assert _rocketreach_state(db, contact.id)['provider_id'] == '456'
     engine.dispose()
+
+
+def test_rocketreach_completed_alias_and_missing_status():
+    assert _rocketreach_email_result({'status': 'completed', 'id': 123, 'work_email': 'jane@company.com'}, LINKEDIN)['status'] == 'returned'
+    assert _rocketreach_email_result({'id': 123, 'work_email': 'jane@company.com'}, LINKEDIN)['status'] == 'returned'

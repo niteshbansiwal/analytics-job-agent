@@ -234,3 +234,10 @@ def test_numbers_in_job_links_are_not_treated_as_career_claims(monkeypatch):
     result = gemini.build_email_preview('Visa', 'Analytics Manager', JD,
                                         'Jane Recruiter', 'Include the job link.', post)
     assert post in result['body']
+
+
+def test_resume_numbers_and_url_digits():
+    assert {'900', '98', '450000', '10000'} <= gemini._approved_numbers()
+    assert gemini._draft_numbers('Saved $450K across 10,000+ queries') <= gemini._approved_numbers()
+    assert not gemini._draft_numbers('https://linkedin.com/jobs/view/987654321/ user123@example.com')
+    assert '123456789' in gemini._draft_numbers('Saved 123456789 dollars')

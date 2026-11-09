@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 import httpx
 from .config import env
 
@@ -169,6 +170,37 @@ def _validated_ids(raw: str) -> list[str]:
     return ids
 
 
+def _normalise_number(value: str) -> str:
+    value = value.lower().replace(',', '').rstrip('+')
+    percent = value.endswith('%')
+    value = value.rstrip('%')
+    multiplier = 1000 if value.endswith('k') else 1000000 if value.endswith('m') else 1
+    if multiplier != 1:
+        value = value[:-1]
+    return f'{float(value) * multiplier:g}' + ('%' if percent else '')
+
+
+def _career_numbers(text: str) -> set[str]:
+    pattern = r'(?<![\\w])\\d[\\d,.]*(?:[kKmM])?%?\\+?'
+    return {_normalise_number(match) for match in re.findall(pattern, text)}
+
+
+def _approved_numbers() -> set[str]:
+    source = ' '.join(CAREER_FACTS.values())
+    path = Path(__file__).resolve().parents[1] / 'config' / 'resume_facts.yaml'
+    if path.is_file():
+        source += ' ' + ' '.join(line.strip()[2:] for line in
+                                path.read_text(encoding='utf-8').splitlines()
+                                if line.lstrip().startswith('- '))
+    return _career_numbers(source)
+
+
+def _draft_numbers(body: str) -> set[str]:
+    body = re.sub(r'(?i)\\b(?:https?://|www\\.)[^\\s<>]+', '', body)
+    body = re.sub(r'(?i)[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}', '', body)
+    return _career_numbers(body)
+
+
 def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, list[str]]:
     """Validate factual claims and format without restricting links."""
     try:
@@ -188,16 +220,10 @@ def _validate_ai_email(raw: str, title: str, company: str) -> tuple[str, str, li
         raise GeminiError('Gemini did not generate a usable subject')
     if not 120 <= len(body) <= 2800:
         raise GeminiError('Gemini did not generate a complete email body')
-    # Any verified fact can support a quantified claim, even when it is not
-    # one of the two or three highlighted fact IDs selected by the model.
-    approved_numbers = set(re.findall(r'\d[\d,.]*%?', ' '.join(CAREER_FACTS.values())))
-    # URLs and addresses are allowed by the owner's email prompt. Digits in
-    # job-post links, portfolio URLs and email usernames are NOT career claims.
-    claims_only = re.sub(r'(?i)\b(?:https?://|www\.)[^\s<>]+', '', body)
-    claims_only = re.sub(r'(?i)[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '', claims_only)
-    used_numbers = set(re.findall(r'\d[\d,.]*%?', claims_only))
-    if not used_numbers.issubset(approved_numbers):
-        raise GeminiError('Gemini added an unsupported numerical career claim')
+    unsupported = _draft_numbers(body) - _approved_numbers()
+    if unsupported:
+        raise GeminiError('Gemini added an unsupported numerical career claim: ' +
+                          ', '.join(sorted(unsupported)))
     role_terms = [w.lower() for w in re.findall(r'[A-Za-z]{5,}', title)
                   if w.lower() not in ('manager', 'senior', 'lead')]
     if company.casefold() not in body.casefold() and not any(
