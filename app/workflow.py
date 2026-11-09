@@ -226,17 +226,25 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
         return {'sent': 0, 'blocked': 'Gmail not connected'}
     at = aware(clock or now())
     local = at.astimezone(__import__('zoneinfo').ZoneInfo(settings()['timezone']))
-    if (not is_workday(local.date()) or local.date().isoformat() in holidays(db)
-            or not cfg['start'] <= local.strftime('%H:%M') <= cfg['end']):
-        return {'sent': 0, 'blocked': 'Outside working calendar'}
+    from .scheduling import is_manual
+    automatic_window = (is_workday(local.date()) and local.date().isoformat() not in holidays(db)
+                        and cfg['start'] <= local.strftime('%H:%M') <= cfg['end'])
     today_start_utc = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     recent_sends = db.execute(select(func.count()).select_from(Event).where(
          Event.action == 'email_sent', Event.created_at >= today_start_utc)).scalar_one()
-    slots = max(0, int(cfg['max_sends_per_day']) - recent_sends)
-    if slots == 0:
-        return {'sent': 0, 'blocked': 'Daily send cap reached'}
-    rows = db.execute(select(Outreach).where(Outreach.status.in_(['scheduled', 'followup_scheduled']),
-                         Outreach.due_at <= at).order_by(Outreach.due_at).limit(slots)).scalars().all()
+    auto_slots = max(0, int(cfg['max_sends_per_day']) - recent_sends)
+    due_rows = db.execute(select(Outreach).where(
+        Outreach.status.in_(['scheduled', 'followup_scheduled']), Outreach.due_at <= at)
+        .order_by(Outreach.due_at).limit(250)).scalars().all()
+    rows = []
+    for candidate in due_rows:
+        if is_manual(db, candidate.id):
+            rows.append(candidate)
+        elif automatic_window and auto_slots > 0:
+            rows.append(candidate)
+            auto_slots -= 1
+    if not rows:
+        return {'sent': 0, 'blocked': 'No eligible due emails'}
     sent, errors = 0, []
     for row in rows:
         # Claim only the scheduled state; a second concurrent worker cannot process it.
