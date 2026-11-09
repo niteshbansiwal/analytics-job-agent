@@ -221,7 +221,7 @@ def overview(user: str = Depends(owner)):
     with session() as db:
         seed_demo(db)
         db.flush()
-        jobs = db.execute(select(Job).order_by(Job.fit_score.desc(), Job.created_at.desc())).scalars().all()
+        jobs = db.execute(select(Job).order_by(Job.created_at.desc(), Job.id.desc())).scalars().all()
         letters = db.execute(select(Outreach).order_by(Outreach.created_at.desc())).scalars().all()
         from collections import defaultdict
         from .db import KV
@@ -325,7 +325,7 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
     """Fact-locked, review-only preview. Does NOT create a Gmail draft or send email."""
     if demo_mode():
         raise HTTPException(409, 'Gemini preview is disabled in demo mode.')
-    from .gemini import build_email_preview
+    from .gemini import build_email_preview, GeminiError
     with session() as db:
         job = db.get(Job, job_id)
         if not job or job.is_demo:
@@ -337,10 +337,17 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         name = next((c.name for c in contacts if c.email), '') or (
             contacts[0].name if contacts else '')
         email_prompt = get_kv(db, 'email_generation_prompt')
-        result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt)
+        try:
+            result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt)
+        except GeminiError as exc:
+            log(db, 'gemini_email_preview_failed', job.id, reason=str(exc)[:180],
+                custom_prompt_configured=bool(email_prompt))
+            raise HTTPException(502, 'Email generation stopped: ' + str(exc)) from exc
         result['resumes'] = available
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
+            prompt_source=result['prompt_source'],
+            prompt_fingerprint=result['prompt_fingerprint'],
             draft_created=False, email_sent=False)
         return result
 
@@ -640,7 +647,8 @@ def delete_imported_job(job_id: str, user: str = Depends(owner)):
 @app.get('/api/outreach/dashboard')
 def outreach_dashboard(user: str = Depends(owner)):
     with session() as db:
-        rows = db.execute(select(Outreach).order_by(Outreach.created_at.desc())).scalars().all()
+        rows = db.execute(select(Outreach).join(Job, Outreach.job_id == Job.id)
+                          .order_by(Job.created_at.desc(), Outreach.created_at.desc(), Outreach.id.desc())).scalars().all()
         jobs = {j.id: j for j in db.execute(select(Job)).scalars().all()}
         contacts = {c.id: c for c in db.execute(select(Contact)).scalars().all()}
         items = []
