@@ -31,11 +31,11 @@ class GeminiError(RuntimeError):
         self.retryable = retryable
 
 
-FAST_FALLBACK_MODEL = 'gemini-3.5-flash'
+EMAIL_MODEL = 'gemini-3.5-flash-lite'
 
 
 def gemini_model() -> str:
-    model = env('GEMINI_MODEL', 'gemini-3.8-flash')
+    model = env('GEMINI_MODEL', EMAIL_MODEL)
     if not re.fullmatch(r'[a-zA-Z0-9._-]{3,90}', model):
         raise GeminiError('Invalid GEMINI_MODEL configuration')
     return model
@@ -58,15 +58,14 @@ def gemini_text(prompt: str, *, json_output: bool = False,
         },
     }
     if model.startswith('gemini-3'):
-        # Gemini 3.8/3.7 Flash reject MINIMAL with HTTP 400. LOW is supported
-        # across the Gemini 3 Flash models used by Atlas.
-        payload['generationConfig']['thinkingConfig'] = {'thinkingLevel': 'LOW'}
+        # Fact ID selection is a small classification task. Flash-Lite supports
+        # MINIMAL; other Gemini 3 models use LOW for compatibility.
+        level = 'MINIMAL' if model == EMAIL_MODEL else 'LOW'
+        payload['generationConfig']['thinkingConfig'] = {'thinkingLevel': level}
     if json_output:
         payload['generationConfig']['responseMimeType'] = 'application/json'
     try:
-        # A slow primary must leave time for the faster fallback within Vercel's
-        # request budget. Never silently issue repeated calls to the same model.
-        with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
             response = client.post(
                 f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
                 headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
@@ -89,7 +88,7 @@ def gemini_text(prompt: str, *, json_output: bool = False,
             raise GeminiError('Gemini returned no text; check model access and content restrictions')
         return result
     except httpx.TimeoutException as exc:
-        raise GeminiError('Gemini request timed out after 12 seconds', retryable=True) from exc
+        raise GeminiError('Email model request timed out after 15 seconds', retryable=True) from exc
     except httpx.HTTPError as exc:
         raise GeminiError('Gemini API network request failed (' + type(exc).__name__ + ')',
                           retryable=True) from exc
@@ -151,33 +150,18 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         json.dumps(fact_topics, separators=(',', ':'))
     )
     selected_model = gemini_model()
-    mode = 'gemini'
+    mode = 'ai_email'
     warning = ''
     try:
         ids = _validated_ids(gemini_text(prompt, json_output=True))
     except GeminiError as primary_error:
-        if primary_error.retryable and selected_model != FAST_FALLBACK_MODEL:
-            try:
-                ids = _validated_ids(gemini_text(
-                    prompt, json_output=True, model=FAST_FALLBACK_MODEL))
-                selected_model = FAST_FALLBACK_MODEL
-                mode = 'gemini_backup'
-                warning = ('Primary Gemini model was slow or temporarily unavailable. '
-                           'A faster Gemini model selected the relevant achievements.')
-            except (GeminiError, ValueError) as backup_error:
-                ids = _keyword_selection(title, jd)
-                mode = 'facts_only_fallback'
-                warning = ('Both Gemini attempts failed. Primary: ' +
-                           str(primary_error)[:110] + '; backup: ' +
-                           str(backup_error)[:110] + '. Showing a facts-only template.')
-        else:
-            ids = _keyword_selection(title, jd)
-            mode = 'facts_only_fallback'
-            warning = 'Gemini could not generate a valid preview: ' + str(primary_error)[:170]
+        ids = _keyword_selection(title, jd)
+        mode = 'facts_only_fallback'
+        warning = 'Email model unavailable: ' + str(primary_error)[:170] + '. Showing a facts-only draft.'
     except ValueError as exc:
         ids = _keyword_selection(title, jd)
         mode = 'facts_only_fallback'
-        warning = 'Gemini returned invalid fact IDs: ' + str(exc)[:170]
+        warning = 'Email model returned invalid fact IDs: ' + str(exc)[:170] + '. Showing a facts-only draft.'
 
     # The AI cannot inject unsupported claims into this output: all achievement
     # sentences are assembled from the allowlist above.
@@ -185,13 +169,15 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     if not re.fullmatch(r"[\w.'-]{2,40}", first_name):
         first_name = 'Hiring Team'
     subject = f'Interest in {title[:115]} at {company[:90]} | Analytics'
+    focus = ('risk and fraud analytics' if any(w in (title + ' ' + jd).lower() for w in ('risk', 'fraud'))
+             else 'commercial and revenue analytics' if any(w in (title + ' ' + jd).lower() for w in ('sales', 'commercial', 'revenue', 'pricing'))
+             else 'analytics delivery and applied AI')
     body = (
         f'Hi {first_name},\n\n'
-        f'I came across the {title} opportunity at {company} and wanted to reach out. '
-        'My background combines analytics delivery with hands-on SQL, dashboarding and applied AI.\n\n'
+        f'I saw the {title} opportunity at {company}. My experience in {focus} may be relevant to the role:\n\n'
         + ''.join('- ' + CAREER_FACTS[fact_id] + '\n' for fact_id in ids)
-        + '\nI would welcome a brief conversation if my experience aligns with the role. '
-        'Please find my resume attached for your review.\n\n'
+        + '\nI would welcome a brief conversation about how I could contribute. '
+        'I have attached my resume for context.\n\n'
         'Regards,\nNitesh Bansiwal'
     )
     return {
