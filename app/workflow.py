@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .config import settings, demo_mode, env
 from .db import Job, Contact, Outreach, Event, Integration, log, now
 from .calendar_rules import next_fixed_send, followup_due, is_workday, aware
+from .scheduling import holidays
 from .resume import tailored_pdf, resume_facts
 from .integrations import (gmail_create_draft, gmail_get_draft, inspect_gmail_draft,
      gmail_send_existing_draft, gmail_get_thread, gmail_get_message, gmail_delete_draft,
@@ -224,7 +225,8 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
         return {'sent': 0, 'blocked': 'Gmail not connected'}
     at = aware(clock or now())
     local = at.astimezone(__import__('zoneinfo').ZoneInfo(settings()['timezone']))
-    if (not is_workday(local.date()) or not cfg['start'] <= local.strftime('%H:%M') <= cfg['end']):
+    if (not is_workday(local.date()) or local.date().isoformat() in holidays(db)
+            or not cfg['start'] <= local.strftime('%H:%M') <= cfg['end']):
         return {'sent': 0, 'blocked': 'Outside working calendar'}
     today_start_utc = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     recent_sends = db.execute(select(func.count()).select_from(Event).where(
@@ -238,7 +240,8 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
     for row in rows:
         # Claim only the scheduled state; a second concurrent worker cannot process it.
         desired_state = row.status
-        result = db.execute(update(Outreach).where(Outreach.id == row.id, Outreach.status == desired_state)
+        result = db.execute(update(Outreach).where(Outreach.id == row.id, Outreach.status == desired_state,
+                          Outreach.due_at <= at)
                        .values(status='sending'))
         db.commit()
         if result.rowcount != 1:
