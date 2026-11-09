@@ -98,11 +98,43 @@ def recover_rejected_linkedin_contacts(db, *, contact_ids=None):
     return recovered
 
 
+def recover_rejected_email_links(db, *, contact_ids=None):
+    """Requeue only legacy Gemini link/email validation failures, once per row.
+
+    This never touches a Gmail draft or sent message. The import previously
+    authorized automation, and a subsequent worker tick may regenerate the
+    failed email with the fixed sanitizer. Other failures stay held.
+    """
+    query = select(Outreach).where(
+        Outreach.status == 'needs_attention',
+        Outreach.error.like(
+            'Draft/schedule error: GeminiError: Gemini added a link or email address not supplied by Atlas%'))
+    if contact_ids is not None:
+        if not contact_ids:
+            return 0
+        query = query.where(Outreach.contact_id.in_(contact_ids))
+    rows = db.execute(query.limit(300)).scalars().all()
+    recovered = 0
+    for row in rows:
+        if row.gmail_draft_id or row.sent_at:
+            continue
+        retry_key = 'auto_email_link_retry:' + row.id
+        if get_kv(db, retry_key, ''):
+            continue
+        set_kv(db, retry_key, now().isoformat())
+        row.status, row.error = 'pending_contact', ''
+        recovered += 1
+        log(db, 'auto_email_link_validation_recovered', row.job_id, row.id,
+            contact_id=row.contact_id, retry_limit=1)
+    return recovered
+
+
 def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     """Idempotent across successful drafts; unresolved contact lookup is retried on later ticks."""
     if demo_mode() or not enabled(db):
         return {'processed': 0, 'scheduled': 0}
     recover_rejected_linkedin_contacts(db, contact_ids=contact_ids)
+    recover_rejected_email_links(db, contact_ids=contact_ids)
     # Never let an unresolved contact on an old job block later jobs.
     query = select(Outreach).where(Outreach.status == 'pending_contact')
     if contact_ids is not None:
