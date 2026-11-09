@@ -323,6 +323,11 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
             row.status = 'sending_review'
             row.error = f'{type(exc).__name__}: {exc}'[:450]
             log(db, 'send_needs_review', row.job_id, row.id, error=row.error)
+            try:
+                job = db.get(Job, row.job_id)
+                send_telegram(f'Atlas send failure: {job.company} — {job.title}\\n{row.error}')
+            except Exception:
+                pass
             errors.append(row.id)
             db.commit()
     return {'sent': sent, 'manual_review_required': errors}
