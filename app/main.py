@@ -1109,13 +1109,16 @@ def cron_tick(request: Request):
             db.rollback()
             results['sending'] = {'error': str(exc)[:300]}
             log(db, 'scheduler_send_error', error=str(exc)[:300])
+        # Reply polling is always performed on each heartbeat, independent of the
+        # slower configurable enrichment interval.
+        try:
+            results['replies'] = monitor_replies(db)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            results['replies'] = {'error': str(exc)[:300]}
+            log(db, 'scheduler_reply_error', error=str(exc)[:300])
         if should_process:
-            try:
-                results['replies'] = monitor_replies(db)
-            except Exception as exc:
-                db.rollback()
-                results['replies'] = {'error': str(exc)[:300]}
-                log(db, 'scheduler_reply_error', error=str(exc)[:300])
             try:
                 results['automation'] = process_pending(db)
                 db.commit()
