@@ -621,7 +621,7 @@ def outreach_dashboard(user: str = Depends(owner)):
         replied = [x for x in items if x['last_reply_at']]
         return {'summary': {'sent': len(sent), 'replied': len(replied),
             'unread': sum(not x['reply_read'] for x in replied),
-            'action_pending': sum(not x['action_done'] for x in replied)},
+            'action_pending': sum(not x['action_done'] and x['last_reply_class'] not in ('bounce', 'out_of_office') for x in replied)},
             'items': items}
 
 
