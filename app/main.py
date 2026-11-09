@@ -509,6 +509,68 @@ def update_email_holidays(data: HolidaysInput, user: str = Depends(owner)):
         return {'holidays': days, 'rescheduled_ids': shifted}
 
 
+@app.delete('/api/jobs/{job_id}')
+def delete_imported_job(job_id: str, user: str = Depends(owner)):
+    """Delete an imported job only if it has no sent/replied outreach."""
+    if demo_mode():
+        raise HTTPException(409, 'Deletion disabled in demo mode')
+    from sqlalchemy import delete
+    from .db import KV
+    with session() as db:
+        job = db.get(Job, job_id, with_for_update=True)
+        if not job or job.is_demo:
+            raise HTTPException(404, 'Imported job not found')
+        rows = db.execute(select(Outreach).where(Outreach.job_id == job_id).with_for_update()).scalars().all()
+        if any(row.sent_at or row.sent_message_id or row.gmail_thread_id or row.status in ('sent', 'reply_received', 'replied') for row in rows):
+            raise HTTPException(409, 'Cannot delete a job with sent messages or tracked replies. Preserve its audit history.')
+        contact_ids = db.execute(select(Contact.id).where(Contact.job_id == job_id)).scalars().all()
+        # Preserve immutable audit events with the deleted job ID for traceability.
+        log(db, 'imported_job_deleted', job_id, company=job.company, title=job.title,
+            contacts=len(contact_ids), unsent_outreach=len(rows))
+        for row in rows:
+            if row.gmail_draft_id:
+                try:
+                    from .integrations import gmail_delete_draft
+                    gmail_delete_draft(db, row.gmail_draft_id)
+                except Exception as exc:
+                    raise HTTPException(502, 'Could not remove Gmail draft; deletion aborted: ' + str(exc)[:160])
+            db.delete(row)
+        for (contact_id,) in contact_ids:
+            db.execute(delete(KV).where(KV.key == 'auto_rr:' + contact_id))
+        db.execute(delete(Contact).where(Contact.job_id == job_id))
+        db.delete(job)
+        return {'deleted': True, 'job_id': job_id}
+
+
+@app.get('/api/automation/progress')
+def automation_progress(user: str = Depends(owner)):
+    """Contact-level progress and audit events; UI polls this endpoint."""
+    with session() as db:
+        jobs = db.execute(select(Job).order_by(Job.created_at.desc()).limit(100)).scalars().all()
+        ids = [j.id for j in jobs]
+        if not ids:
+            return {'jobs': [], 'events': []}
+        rows = db.execute(select(Outreach).where(Outreach.job_id.in_(ids))).scalars().all()
+        contacts = db.execute(select(Contact).where(Contact.job_id.in_(ids))).scalars().all()
+        events = db.execute(select(Event).where(Event.job_id.in_(ids)).order_by(Event.created_at.desc()).limit(500)).scalars().all()
+        contact_map = {x.id: x for x in contacts}
+        by_job = {}
+        for row in rows:
+            contact = contact_map.get(row.contact_id)
+            by_job.setdefault(row.job_id, []).append({
+                'outreach_id': row.id, 'contact_id': row.contact_id,
+                'contact_name': contact.name if contact else 'Unknown contact',
+                'contact_email': row.to_email or (contact.email if contact else ''),
+                'status': row.status, 'due_at': row.due_at.isoformat() if row.due_at else None,
+                'error': row.error,
+            })
+        return {'jobs': [{'id': j.id, 'company': j.company, 'title': j.title,
+                          'contacts': by_job.get(j.id, [])} for j in jobs],
+                'events': [{'id': e.id, 'job_id': e.job_id, 'outreach_id': e.outreach_id,
+                            'action': e.action, 'details': json.loads(e.details or '{}'),
+                            'at': e.created_at.isoformat()} for e in events]}
+
+
 @app.get('/api/jobs/{job_id}')
 def job_details(job_id: str, user: str = Depends(owner)):
     with session() as db:
