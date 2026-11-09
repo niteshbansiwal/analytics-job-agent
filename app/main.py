@@ -1112,6 +1112,32 @@ def run_automation_now(user: str = Depends(owner)):
         return {'automation': result}
 
 
+@app.get('/api/cron/probe')
+def scheduler_probe(request: Request):
+    """Safe scheduler integration test: persist a heartbeat, never send mail."""
+    secret = env('CRON_SECRET')
+    if not secret or not hmac.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
+        raise HTTPException(401, 'Invalid scheduler credential')
+    with session() as db:
+        count = int(get_kv(db, 'schedule_probe_count', '0')) + 1
+        at = now().isoformat()
+        set_kv(db, 'schedule_probe_count', str(count))
+        set_kv(db, 'schedule_probe_last_at', at)
+        log(db, 'schedule_probe_invoked', count=count, at=at)
+        db.flush()
+        return {'ok': True, 'count': count, 'last_at': at, 'sent_emails': 0}
+
+
+@app.get('/api/cron/probe/status')
+def scheduler_probe_status(user: str = Depends(owner)):
+    """Signed-in owner can inspect actual persisted probe invocations."""
+    with session() as db:
+        return {'count': int(get_kv(db, 'schedule_probe_count', '0')),
+                'last_at': get_kv(db, 'schedule_probe_last_at', ''),
+                'has_run': bool(get_kv(db, 'schedule_probe_last_at', '')),
+                'mode': 'database-heartbeat-only; no Gmail sends'}
+
+
 @app.get('/api/cron/tick')
 def cron_tick(request: Request):
     """Internal Vercel Schedule dispatch, authenticated with CRON_SECRET."""
