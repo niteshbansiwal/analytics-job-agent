@@ -46,7 +46,7 @@ def possible_matches(db, *, company: str, title: str, location: str,
     """
     post = canonical(post_url)
     apply = canonical(apply_url) if apply_url else ''
-    existing = db.execute(select(Job).where(Job.company.isnot(None))).scalars().all()
+    existing = db.execute(select(Job).where(Job.company.isnot(None), Job.status != 'archived')).scalars().all()
     candidates = []
     for job in existing:
         old_post = canonical(job.post_url)
