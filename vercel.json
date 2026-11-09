@@ -4,7 +4,7 @@
   "schedules": {
     "atlas-automation": {
       "schedule": "*/15 * * * *",
-      "path": "/api/cron/tick",
+      "path": "/api/cron/probe",
       "requestMethod": "GET"
     }
   }
