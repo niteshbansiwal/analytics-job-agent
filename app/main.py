@@ -251,6 +251,14 @@ def overview(user: str = Depends(owner)):
                 'scheduler_ready': bool(env('CRON_SECRET')),
                 'scheduler_interval_minutes': int(get_kv(db, 'scheduler_interval_minutes', '5')),
                 'scheduler_last_tick': get_kv(db, 'scheduler_last_tick', ''),
+                'scheduler_send_last_run': get_kv(db, 'scheduler_send_last_run', ''),
+                'scheduler_send_last_success': get_kv(db, 'scheduler_send_last_success', ''),
+                'scheduler_send_last_result': get_kv(db, 'scheduler_send_last_result', ''),
+                'scheduler_reply_last_run': get_kv(db, 'scheduler_reply_last_run', ''),
+                'scheduler_reply_last_success': get_kv(db, 'scheduler_reply_last_success', ''),
+                'scheduler_reply_last_result': get_kv(db, 'scheduler_reply_last_result', ''),
+                'scheduler_cadence_minutes': 10,
+                'scheduler_provider': 'Vercel Schedules (registration unverified)',
                 'scheduler_last_result': get_kv(db, 'scheduler_last_result', ''),
                 'auto_import_enabled': get_kv(db, 'atlas_auto_import_enabled', '') == 'true',
                 'holidays': holidays(db),
@@ -1106,46 +1114,62 @@ def run_automation_now(user: str = Depends(owner)):
 
 @app.get('/api/cron/tick')
 def cron_tick(request: Request):
+    """Internal Vercel Schedule dispatch, authenticated with CRON_SECRET."""
     secret = env('CRON_SECRET')
     if not secret or not hmac.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
         raise HTTPException(401, 'Invalid scheduler credential')
     if demo_mode():
-        return {'status': 'demo_mode', 'note': 'No discovery, sending or Gmail monitoring in demo'}
+        return {'status': 'demo_mode'}
     with session() as db:
-        from datetime import timedelta
         from .auto_pipeline import process_pending
         tick_at = now()
         interval = int(get_kv(db, 'scheduler_interval_minutes', '5'))
         previous = get_kv(db, 'scheduler_last_processed', '')
-        should_process = not previous or (tick_at - datetime.fromisoformat(previous)).total_seconds() >= interval * 60 - 15
-        results = {'replies': {'skipped': True}, 'automation': {'skipped': True}, 'sending': {'skipped': True}}
-        # Always check for due manually scheduled emails on every 5-minute heartbeat.
-        # A failure in reply monitoring must never prevent scheduled sending.
+        try:
+            should_process = not previous or (tick_at - datetime.fromisoformat(previous)).total_seconds() >= interval * 60 - 15
+        except ValueError:
+            should_process = True
+        results = {'sending': {}, 'replies': {}, 'automation': {'skipped': True}}
+        set_kv(db, 'scheduler_last_tick', tick_at.isoformat())
+        db.commit()
+
+        set_kv(db, 'scheduler_send_last_run', now().isoformat())
+        db.commit()
         try:
             results['sending'] = send_due(db)
+            set_kv(db, 'scheduler_send_last_result', json.dumps(results['sending'], default=str)[:800])
+            if not results['sending'].get('error') and not results['sending'].get('manual_review_required'):
+                set_kv(db, 'scheduler_send_last_success', now().isoformat())
         except Exception as exc:
             db.rollback()
-            results['sending'] = {'error': str(exc)[:300]}
+            results['sending'] = {'error': type(exc).__name__ + ': ' + str(exc)[:200]}
+            set_kv(db, 'scheduler_send_last_result', json.dumps(results['sending']))
             log(db, 'scheduler_send_error', error=str(exc)[:300])
-        # Reply polling is always performed on each heartbeat, independent of the
-        # slower configurable enrichment interval.
+        db.commit()
+
+        set_kv(db, 'scheduler_reply_last_run', now().isoformat())
+        db.commit()
         try:
             results['replies'] = monitor_replies(db)
-            db.commit()
+            set_kv(db, 'scheduler_reply_last_result', json.dumps(results['replies'], default=str)[:800])
+            set_kv(db, 'scheduler_reply_last_success', now().isoformat())
         except Exception as exc:
             db.rollback()
-            results['replies'] = {'error': str(exc)[:300]}
+            results['replies'] = {'error': type(exc).__name__ + ': ' + str(exc)[:200]}
+            set_kv(db, 'scheduler_reply_last_result', json.dumps(results['replies']))
             log(db, 'scheduler_reply_error', error=str(exc)[:300])
+        db.commit()
+
         if should_process:
             try:
                 results['automation'] = process_pending(db)
-                db.commit()
             except Exception as exc:
                 db.rollback()
                 results['automation'] = {'error': str(exc)[:300]}
                 log(db, 'scheduler_automation_error', error=str(exc)[:300])
             set_kv(db, 'scheduler_last_processed', tick_at.isoformat())
-        set_kv(db, 'scheduler_last_tick', tick_at.isoformat())
+            db.commit()
         set_kv(db, 'scheduler_last_result', json.dumps(results, default=str)[:3000])
         log(db, 'scheduler_tick', **results)
-        return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 5}
+        db.commit()
+        return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 10}
