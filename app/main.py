@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from .config import ROOT, env, settings, demo_mode
 from .db import session, engine, Job, Contact, Outreach, Integration, Event, get_kv, set_kv, seed_demo, log, now
 from .calendar_rules import next_fixed_send
+from .scheduling import holidays, schedule_slot, save_holidays
 from .integrations import (google_oauth_url, google_code_exchange, google_userinfo, save_google_refresh,
     rocketreach_lookup, rocketreach_check_status)
 from .workflow import approve_job, prepare_outreach, cancel_outreach, monitor_replies, send_due
@@ -251,6 +252,8 @@ def overview(user: str = Depends(owner)):
                 'max_jobs': cfg['search']['shortlist_size'], 'send_start': cfg['email']['start'],
                 'send_end': cfg['email']['end'], 'send_time': cfg['email']['preferred_send_time'],
                 'send_enabled': cfg['email']['scheduled_sending_enabled'],
+                'scheduler_ready': bool(env('SCHEDULER_READY') == 'true' and env('CRON_SECRET')),
+                'holidays': holidays(db),
                 'followup_enabled': cfg['email']['followup']['enabled'],
                 'followup_hours': cfg['email']['followup']['hours'],
                 'max_followups': cfg['email']['followup']['max_attempts'],
@@ -394,6 +397,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             raise HTTPException(409, 'This job already has sent or active outreach; no duplicate draft created.')
         if row and row.gmail_draft_id and not data.replace_existing_draft:
             raise HTTPException(409, 'Existing Gmail draft: confirm replacement before overwriting its edits.')
+        previous_due = row.due_at if row and row.status == 'scheduled' and row.due_at and row.due_at.replace(tzinfo=timezone.utc) > now() else None
         item, pdf = selected_pdf(db, data)
         filename = item['filename']
         draft_id = row.gmail_draft_id if row else ''
@@ -450,19 +454,64 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
         row.resume_b64 = base64.b64encode(pdf).decode()
         row.resume_name = filename
         row.gmail_draft_id = draft_id
-        row.status = 'draft_ready'  # Never eligible for automatic send_due.
-        row.due_at = None
+        row.status = 'scheduled' if previous_due else 'draft_ready'
+        row.due_at = previous_due
         row.error = ''
         job.status = 'approved'
         db.flush()
         log(db, 'reviewed_gmail_draft_verified', job.id, row.id,
             gmail_draft_id=draft_id, recipient=contact.email,
             resume_id=data.resume_id, resume_sha256=item['sha256'], sent=False)
-        return {'verified': True, 'sent': False, 'scheduled': False,
+        return {'verified': True, 'sent': False, 'scheduled': bool(previous_due),
                 'draft_id': draft_id, 'resume_filename': filename,
                 'recipient_email': contact.email,
                 'gmail_url': 'https://mail.google.com/mail/u/0/#drafts',
                 'outreach': json_outreach(row)}
+
+class ScheduleInput(BaseModel):
+    due_at: datetime
+
+@app.put('/api/outreach/{outreach_id}/schedule')
+def schedule_reviewed(outreach_id: str, data: ScheduleInput, user: str = Depends(owner)):
+    if not settings()['email']['scheduled_sending_enabled'] or env('SCHEDULER_READY') != 'true' or not env('CRON_SECRET'):
+        raise HTTPException(409, 'Scheduled sending is not active. Configure a recurring scheduler and enable the sending safety lock first.')
+    with session() as db:
+        row = db.get(Outreach, outreach_id, with_for_update=True)
+        if not row or row.status not in ('draft_ready', 'scheduled') or not row.gmail_draft_id:
+            raise HTTPException(409, 'Only a verified, unsent Gmail draft can be scheduled or edited.')
+        if not db.get(Integration, 'gmail'):
+            raise HTTPException(409, 'Gmail is disconnected.')
+        try:
+            due = schedule_slot(db, data.due_at)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        row.due_at = due
+        row.status = 'scheduled'
+        log(db, 'reviewed_email_scheduled', row.job_id, row.id, due_at=due)
+        return {'outreach': json_outreach(row), 'scheduled': True}
+
+@app.post('/api/outreach/{outreach_id}/unschedule')
+def unschedule_reviewed(outreach_id: str, user: str = Depends(owner)):
+    with session() as db:
+        row = db.get(Outreach, outreach_id, with_for_update=True)
+        if not row or row.status != 'scheduled':
+            raise HTTPException(409, 'This item is not scheduled.')
+        row.status, row.due_at = 'draft_ready', None
+        log(db, 'reviewed_email_unscheduled', row.job_id, row.id)
+        return {'outreach': json_outreach(row)}
+
+class HolidaysInput(BaseModel):
+    dates: list[str] = Field(max_length=200)
+
+@app.put('/api/email/holidays')
+def update_email_holidays(data: HolidaysInput, user: str = Depends(owner)):
+    with session() as db:
+        try:
+            days, shifted = save_holidays(db, data.dates)
+        except ValueError as exc:
+            raise HTTPException(422, f'Invalid holiday date: {exc}')
+        log(db, 'email_holidays_updated', count=len(days), shifted=len(shifted))
+        return {'holidays': days, 'rescheduled_ids': shifted}
 
 
 @app.get('/api/jobs/{job_id}')
