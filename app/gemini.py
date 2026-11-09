@@ -219,7 +219,9 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     # The AI cannot inject unsupported claims into this output: all achievement
     # sentences are assembled from the allowlist above.
     first_name = (contact_name or '').strip().split(' ')[0]
-    if not re.fullmatch(r"[\w.'-]{2,40}", first_name):
+    if (contact_name or '').strip().casefold() == 'hiring team':
+        first_name = 'Hiring Team'
+    if first_name != 'Hiring Team' and not re.fullmatch(r"[\w.'-]{2,40}", first_name):
         first_name = 'Hiring Team'
     subject = f'Interest in {title[:115]} at {company[:90]} | Analytics'
     default_opening = f'I saw the {title} opportunity at {company} and wanted to reach out.'

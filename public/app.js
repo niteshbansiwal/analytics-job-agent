@@ -98,7 +98,7 @@ function sheetDialog(){
  <h3>Or paste CSV directly</h3><p>Useful if a scheduled task provides CSV text instead of an attached spreadsheet.</p>
  <form id="csv-import-form"><textarea class="form-input form-textarea" name="csv_text" rows="5" maxlength="400000" required placeholder="company,title,location,post_url,..."></textarea>
  <button class="btn btn-ghost" type="submit" style="margin-top:10px">Import pasted CSV ↗</button></form>
- <p class="hint">Imported posting dates, job details and hiring relationships are marked unverified until you check the original sources. Import never sends emails.</p>`);
+ <p class="hint">Imported posting dates, job details and hiring relationships are marked unverified until you check the original sources. Import queues outreach; Vercel sends scheduled emails.</p>`);
 }
 let atlasProgressTimer=null;
 async function showAutomationProgress(){state.page='progress';render();await refreshAutomationProgress();return;
@@ -150,11 +150,12 @@ async function handleSheetSubmit(form){
   }
   await load();
 setInterval(()=>{if(['outbox','settings','overview','jobs','progress'].includes(state.page)&&!document.querySelector('dialog[open]'))load().then(()=>{if(state.page==='progress')refreshAutomationProgress()})},4000);
-  if(result.created){
-   await showAutomationProgress();
+  if((result.job_ids||[]).length){
+   state.importIds=result.job_ids;
+   closeModal();setPage('progress');await refreshAutomationProgress();
    api('/api/automation/run-now',{method:'POST'}).then(()=>refreshAutomationProgress()).catch(e=>toast('Automation worker: '+e.message,true));
   }else sheetResult(result);
-  toast(result.created+' jobs imported; '+result.duplicates+' duplicates skipped');
+  toast(result.created+' new jobs; '+result.contacts_created+' contacts added; '+result.duplicates+' existing jobs');
  }catch(err){
   const message=escapeHtml(err.message||'Unable to import this file.');
   modal(`<h2>Import validation failed</h2><p>${message}</p><p>Atlas accepts both the official <strong>Jobs</strong> template and ChatGPT's <strong>Approved Jobs</strong> export. Check that each row has a company, role and original HTTPS job link.</p><p><a class="btn btn-ghost" href="/api/spreadsheets/template.xlsx" download>↓ Download compatible Excel template</a></p><button class="btn btn-dark" type="button" id="retry-sheet-import">Try another file</button>`);

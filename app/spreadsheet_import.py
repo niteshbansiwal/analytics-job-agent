@@ -182,6 +182,64 @@ def parse_file(data: bytes, filename: str):
         raise ValueError(f'Could not read XLSX file ({type(exc).__name__}). Use the Atlas template.') from exc
 
 
+
+def _import_contacts(db, job, item, number, errors):
+    """Accept contact email or LinkedIn independently, including on re-import."""
+    from .db import Outreach
+    existing = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
+    created = 0
+    for index in (1, 2):
+        prefix = f'contact_{index}_'
+        name = item.get(prefix + 'name', '').strip()[:120]
+        profile = _public_https_url(item.get(prefix + 'linkedin', ''))
+        evidence = _public_https_url(item.get(prefix + 'evidence', ''))
+        email = item.get(prefix + 'email', '').strip()[:180]
+        if email and not re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', email):
+            errors.append(f'Row {number}: contact {index} email invalid; ignored.')
+            email = ''
+        if profile and not re.fullmatch(r'https://(?:www\.)?linkedin\.com/in/[^/?#]+/?(?:[?#].*)?', profile, re.I):
+            errors.append(f'Row {number}: contact {index} LinkedIn URL must be a person profile.')
+            profile = ''
+        if not (email or profile or evidence):
+            if name: errors.append(f'Row {number}: contact {index} has no usable email or profile.')
+            continue
+        category = item.get(prefix + 'type', '').strip().lower()
+        poster = bool(profile and _public_https_url(item.get('author_url', '')) == profile)
+        if poster: category = 'poster'
+        if category not in ('poster', 'hr', 'senior_analytics', ''):
+            errors.append(f'Row {number}: contact {index} type unknown; treated as potential contact.')
+            category = ''
+        match = next((c for c in existing if
+                      (profile and c.linkedin_url == profile) or
+                      (email and c.email and c.email.casefold() == email.casefold()) or
+                      (name and c.name.casefold() == name.casefold() and not c.linkedin_url and not c.email)), None)
+        if match:
+            changed = False
+            if name and match.name == 'Hiring Team': match.name, changed = name, True
+            if profile and not match.linkedin_url: match.linkedin_url, changed = profile, True
+            if evidence and not match.evidence_url: match.evidence_url, changed = evidence, True
+            if email and not match.email:
+                match.email, match.email_status, changed = email, 'user_supplied_unverified', True
+            if changed:
+                for row in db.execute(select(Outreach).where(Outreach.contact_id == match.id, Outreach.status == 'needs_attention')).scalars():
+                    if not row.gmail_draft_id and not row.sent_at:
+                        row.status, row.error = 'pending_contact', ''
+                log(db, 'spreadsheet_contact_enriched', job.id, contact_id=match.id)
+            continue
+        contact = Contact(job_id=job.id, name=name or 'Hiring Team',
+            title=item.get(prefix + 'title', '').strip()[:200],
+            category={'poster':'Original job poster', 'hr':'Talent acquisition contact',
+                      'senior_analytics':'Senior analytics professional'}.get(category, 'Potential hiring-side contact (spreadsheet)'),
+            linkedin_url=profile, evidence_url=evidence,
+            relationship='poster' if poster else 'potential',
+            reason='User-supplied contact; identity and hiring relationship unverified',
+            email=email, email_status='user_supplied_unverified' if email else 'unavailable')
+        db.add(contact)
+        db.flush()
+        existing.append(contact)
+        created += 1
+    return created
+
 def import_rows(db, rows):
     created, duplicates, skipped, contacts_created = 0, 0, 0, 0
     errors, ids, seen = [], [], set()
@@ -204,6 +262,11 @@ def import_rows(db, rows):
             post_url=url, apply_url=item.get('apply_url', ''))
         if exact:
             duplicates += 1
+            recovered = _import_contacts(db, exact, item, number, errors)
+            contacts_created += recovered
+            if recovered:
+                ids.append(exact.id)
+                log(db, 'spreadsheet_existing_job_contacts_recovered', exact.id, row=number, contacts=recovered)
             continue
         if candidates:
             possible_duplicates += 1
@@ -249,46 +312,14 @@ def import_rows(db, rows):
         if candidates:
             log(db, 'possible_duplicate_requires_review', job.id,
                 candidate_ids=[x['job_id'] for x in candidates], row=number)
-        for index in (1, 2):
-            prefix = f'contact_{index}_'
-            name = item.get(prefix + 'name', '').strip()[:120]
-            profile = _public_https_url(item.get(prefix + 'linkedin', ''))
-            evidence = _public_https_url(item.get(prefix + 'evidence', ''))
-            if not name:
-                continue
-            if not (profile or evidence):
-                errors.append(f'Row {number}: contact {index} omitted; add a LinkedIn profile or evidence URL.')
-                continue
-            email = item.get(prefix + 'email', '').strip()[:180]
-            if email and not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email):
-                errors.append(f'Row {number}: contact {index} email omitted (invalid format).')
-                email = ''
-            contact_type = item.get(prefix + 'type', '').strip().lower()
-            is_poster = bool(author_url and profile and author_url == profile)
-            if is_poster:
-                contact_type = 'poster'
-            if contact_type not in ('poster', 'hr', 'senior_analytics', ''):
-                errors.append(f'Row {number}: contact {index} type unknown; use poster, hr or senior_analytics.')
-                contact_type = ''
-            db.add(Contact(
-                job_id=job.id, name=name, title=item.get(prefix + 'title', '').strip()[:200],
-                category={'poster': 'Original job poster', 'hr': 'Talent acquisition contact',
-                          'senior_analytics': 'Senior analytics professional'}.get(
-                              contact_type, 'Potential hiring-side contact (spreadsheet)'),
-                linkedin_url=profile, evidence_url=evidence,
-                relationship='poster' if is_poster else 'potential',
-                reason=('Original posting names this author; verify before outreach' if is_poster
-                        else 'User-supplied ChatGPT research; hiring relationship unverified'),
-                email=email, email_status='user_supplied_unverified' if email else 'unavailable',
-            ))
-            contacts_created += 1
+        contacts_created += _import_contacts(db, job, item, number, errors)
     return {
         'created': created, 'duplicates': duplicates, 'skipped': skipped,
         'possible_duplicates': possible_duplicates,
         'duplicate_candidates': duplicate_candidates[:20],
         'contacts_created': contacts_created, 'rows_read': len(rows),
         'job_ids': ids, 'errors': errors[:30],
-        'note': 'All spreadsheet claims remain unverified. No messages or outreach were sent.',
+        'note': 'Contact claims remain unverified. Import queues outreach; no messages are sent synchronously.',
     }
 
 
@@ -326,7 +357,7 @@ def template_xlsx() -> bytes:
         ('Otherwise contact_1 is HR (type hr), contact_2 is senior analytics (type senior_analytics).',),
         ('Do not claim a potential contact is the confirmed hiring manager.',),
         ('No API keys needed. Upload the completed .xlsx or .csv from the Atlas dashboard.',),
-        ('Importing never sends an email. Each job still requires owner approval.',),
+        ('Import queues outreach. Review recipients before uploading; scheduled email sending runs separately.',),
     ]
     for row in instructions:
         notes.append(row)
