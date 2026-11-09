@@ -253,6 +253,7 @@ def overview(user: str = Depends(owner)):
                 'send_end': cfg['email']['end'], 'send_time': cfg['email']['preferred_send_time'],
                 'send_enabled': True,
                 'scheduler_ready': bool(env('CRON_SECRET')),
+                'auto_import_enabled': get_kv(db, 'atlas_auto_import_enabled', '') == 'true',
                 'holidays': holidays(db),
                 'followup_enabled': cfg['email']['followup']['enabled'],
                 'followup_hours': cfg['email']['followup']['hours'],
