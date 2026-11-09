@@ -804,8 +804,9 @@ class ContactInput(BaseModel):
 def add_contact(job_id: str, data: ContactInput, user: str = Depends(owner)):
     if data.email and not re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', data.email):
         raise HTTPException(422, 'Enter a valid professional email address')
-    if data.linkedin_url and not data.linkedin_url.startswith('https://www.linkedin.com/in/'):
-        raise HTTPException(422, 'LinkedIn profile must use https://www.linkedin.com/in/...')
+    from .linkedin_urls import linkedin_profile_url
+    if data.linkedin_url and not linkedin_profile_url(data.linkedin_url):
+        raise HTTPException(422, 'Provide a safe HTTPS LinkedIn URL; country-specific subdomains are supported.')
     with session() as db:
         job = db.get(Job, job_id)
         if not job:
@@ -916,11 +917,9 @@ def lookup_contact_email(contact_id: str, data: RocketReachLookupInput,
         if contact.email:
             return {'status': 'already_found', 'email': contact.email,
                     'email_status': contact.email_status, 'detail': 'Email already saved; no lookup started.'}
-        from urllib.parse import urlsplit
-        url = urlsplit(contact.linkedin_url)
-        if url.scheme != 'https' or (url.hostname or '').lower() not in (
-                'www.linkedin.com', 'linkedin.com', 'in.linkedin.com') or not url.path.startswith('/in/'):
-            raise HTTPException(422, 'A valid LinkedIn person profile URL is required.')
+        from .linkedin_urls import linkedin_profile_url
+        if not linkedin_profile_url(contact.linkedin_url):
+            raise HTTPException(422, 'A safe HTTPS LinkedIn URL is required.')
         previous = _rocketreach_state(db, contact.id)
         if previous:
             if not data.retry:

@@ -19,6 +19,7 @@ from sqlalchemy import select
 from .db import Job, Contact, log
 from .discovery import canonical, ranking, source_type
 from .duplicates import possible_matches
+from .linkedin_urls import linkedin_profile_url
 
 MAX_FILE_BYTES = 2_000_000
 MAX_ROWS = 250
@@ -192,15 +193,15 @@ def _import_contacts(db, job, item, number, errors):
     for index in (1, 2):
         prefix = f'contact_{index}_'
         name = item.get(prefix + 'name', '').strip()[:120]
-        profile = _public_https_url(item.get(prefix + 'linkedin', ''))
+        raw_profile = item.get(prefix + 'linkedin', '')
+        profile = linkedin_profile_url(raw_profile)
         evidence = _public_https_url(item.get(prefix + 'evidence', ''))
         email = item.get(prefix + 'email', '').strip()[:180]
         if email and not re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', email):
             errors.append(f'Row {number}: contact {index} email invalid; ignored.')
             email = ''
-        if profile and not re.fullmatch(r'https://(?:www\.)?linkedin\.com/in/[^/?#]+/?(?:[?#].*)?', profile, re.I):
-            errors.append(f'Row {number}: contact {index} LinkedIn URL must be a person profile.')
-            profile = ''
+        if raw_profile and not profile:
+            errors.append(f'Row {number}: contact {index} LinkedIn URL must be an HTTPS linkedin.com URL; original value not changed.')
         if not (email or profile or evidence):
             if name: errors.append(f'Row {number}: contact {index} has no usable email or profile.')
             continue
@@ -222,11 +223,18 @@ def _import_contacts(db, job, item, number, errors):
             if evidence and not match.evidence_url: match.evidence_url, changed = evidence, True
             if email and not match.email:
                 match.email, match.email_status, changed = email, 'user_supplied_unverified', True
-            if changed:
+            # Requeue only failures caused by a previously rejected/missing
+            # LinkedIn URL. Do not retry unrelated failures or duplicate drafts.
+            recovered = 0
+            if profile or match.email:
                 for row in db.execute(select(Outreach).where(Outreach.contact_id == match.id, Outreach.status == 'needs_attention')).scalars():
-                    if not row.gmail_draft_id and not row.sent_at:
+                    if (not row.gmail_draft_id and not row.sent_at
+                            and row.error.startswith('No usable LinkedIn person profile for enrichment')):
                         row.status, row.error = 'pending_contact', ''
-                log(db, 'spreadsheet_contact_enriched', job.id, contact_id=match.id)
+                        recovered += 1
+            if changed or recovered:
+                log(db, 'spreadsheet_contact_enriched', job.id,
+                    contact_id=match.id, recovered_outreach=recovered)
             continue
         contact = Contact(job_id=job.id, name=name or 'Hiring Team',
             title=item.get(prefix + 'title', '').strip()[:200],

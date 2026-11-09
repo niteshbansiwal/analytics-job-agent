@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy.orm import Session
 from .config import env, settings, demo_mode
 from .db import Integration
+from .linkedin_urls import linkedin_profile_url
 
 GOOGLE_SCOPES = [
     'openid', 'email', 'profile',
@@ -223,7 +224,7 @@ def _rocketreach_email_result(payload: dict | list, requested_linkedin: str = ''
         parsed = urlsplit(url if '://' in str(url) else 'https://' + str(url))
         host = (parsed.hostname or '').lower()
         match = re.search(r'^/in/([^/?#]+)', parsed.path, re.I)
-        return match.group(1).lower() if host in ('linkedin.com', 'www.linkedin.com', 'in.linkedin.com') and match else ''
+        return match.group(1).lower() if (host == 'linkedin.com' or host.endswith('.linkedin.com')) and match else ''
 
     supplied_slug = slug(requested_linkedin)
     returned_slug = slug(person.get('linkedin_url') or person.get('linkedin_ext_url') or '')
@@ -292,8 +293,9 @@ def _rocketreach_request(path: str, *, params: dict) -> dict | list:
 
 
 def rocketreach_lookup(linkedin_url: str) -> dict:
-    if 'linkedin.com/in/' not in linkedin_url.lower():
-        return {'status': 'no_profile'}
+    if not linkedin_profile_url(linkedin_url):
+        return {'status': 'no_profile', 'detail': 'Provide a safe HTTPS LinkedIn URL'}
+    # Send the original URL unchanged; RocketReach determines resolvability.
     response = _rocketreach_request('person/lookup',
         params={'linkedin_url': linkedin_url, 'lookup_type': 'standard',
                 'return_cached_emails': 'true'})

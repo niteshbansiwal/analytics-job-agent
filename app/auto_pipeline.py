@@ -12,6 +12,7 @@ from .gemini import build_email_preview
 from .integrations import gmail_create_draft, gmail_get_draft, inspect_gmail_draft, rocketreach_lookup, rocketreach_check_status, send_telegram
 from .scheduling import schedule_slot, holidays
 from .calendar_rules import next_fixed_send
+from .linkedin_urls import linkedin_profile_url
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -56,10 +57,52 @@ def _failure(db, row, message):
     except Exception:
         pass
 
+def recover_rejected_linkedin_contacts(db, *, contact_ids=None):
+    """Requeue legacy Atlas URL-validation failures when a real URL is recoverable.
+
+    Older imports discarded some country-specific LinkedIn URLs. Only restore
+    from a contact-specific evidence URL, or the named poster's author URL.
+    Never guess an address, invent a profile, or retry already drafted mail.
+    """
+    query = select(Outreach).where(
+        Outreach.status == 'needs_attention',
+        Outreach.error.like('No usable LinkedIn person profile for enrichment%'))
+    if contact_ids is not None:
+        if not contact_ids:
+            return 0
+        query = query.where(Outreach.contact_id.in_(contact_ids))
+    failures = db.execute(query.limit(300)).scalars().all()
+    recovered = 0
+    for row in failures:
+        if row.gmail_draft_id or row.sent_at:
+            continue
+        contact = db.get(Contact, row.contact_id)
+        if not contact:
+            continue
+        profile = linkedin_profile_url(contact.linkedin_url)
+        if not profile:
+            profile = linkedin_profile_url(contact.evidence_url)
+        if not profile:
+            job = db.get(Job, row.job_id)
+            if (job and job.author_name and contact.name
+                    and job.author_name.strip().casefold() == contact.name.strip().casefold()):
+                profile = linkedin_profile_url(job.author_url)
+        if not profile:
+            continue
+        if not contact.linkedin_url:
+            contact.linkedin_url = profile
+        row.status, row.error = 'pending_contact', ''
+        recovered += 1
+        log(db, 'auto_linkedin_url_recovered', row.job_id, row.id,
+            contact_id=contact.id, source='stored_contact_or_verified_author_evidence')
+    return recovered
+
+
 def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     """Idempotent across successful drafts; unresolved contact lookup is retried on later ticks."""
     if demo_mode() or not enabled(db):
         return {'processed': 0, 'scheduled': 0}
+    recover_rejected_linkedin_contacts(db, contact_ids=contact_ids)
     # Never let an unresolved contact on an old job block later jobs.
     query = select(Outreach).where(Outreach.status == 'pending_contact')
     if contact_ids is not None:
@@ -91,7 +134,7 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
                 _failure(db, row, 'No contact email and RocketReach is not configured')
                 continue
             candidate = db.get(Contact, row.contact_id)
-            if candidate and not (candidate.linkedin_url.startswith('https://www.linkedin.com/in/') or candidate.linkedin_url.startswith('https://linkedin.com/in/')):
+            if candidate and not linkedin_profile_url(candidate.linkedin_url):
                 candidate = None
             if not candidate:
                 _failure(db, row, 'No usable LinkedIn person profile for enrichment')
