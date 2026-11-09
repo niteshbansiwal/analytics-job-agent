@@ -69,9 +69,10 @@ def owner(request: Request):
             raise HTTPException(403, 'Cross-origin request rejected')
     return user
 
-def json_job(job: Job, db: Session):
-    contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
-    outreach = db.execute(select(Outreach).where(Outreach.job_id == job.id).order_by(Outreach.created_at.desc())).scalars().first()
+def json_job(job: Job, db: Session, contacts=None, outreach=None, rr_states=None):
+    if contacts is None: contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
+    if outreach is None: outreach = db.execute(select(Outreach).where(Outreach.job_id == job.id).order_by(Outreach.created_at.desc())).scalars().first()
+    rr_states = rr_states or {}
     return {
       'id': job.id, 'company': job.company, 'title': job.title, 'location': job.location,
       'arrangement': job.arrangement, 'experience': job.experience, 'salary': job.salary,
@@ -86,9 +87,9 @@ def json_job(job: Job, db: Session):
         'id': c.id, 'name': c.name, 'title': c.title, 'category': c.category,
         'linkedin_url': c.linkedin_url, 'evidence_url': c.evidence_url, 'reason': c.reason,
         'relationship': c.relationship, 'email': c.email, 'email_status': c.email_status,
-         'rocketreach_status': _rocketreach_state(db, c.id).get('status', 'not_started'),
-         'rocketreach_next_check_at': _rocketreach_state(db, c.id).get('next_check_at', ''),
-         'rocketreach_lookup_count': _rocketreach_state(db, c.id).get('lookup_count', 0),
+         'rocketreach_status': rr_states.get(c.id, {}).get('status', 'not_started'),
+         'rocketreach_next_check_at': rr_states.get(c.id, {}).get('next_check_at', ''),
+         'rocketreach_lookup_count': rr_states.get(c.id, {}).get('lookup_count', 0),
       } for c in contacts],
       'outreach': json_outreach(outreach) if outreach else None,
     }
@@ -222,13 +223,26 @@ def overview(user: str = Depends(owner)):
         db.flush()
         jobs = db.execute(select(Job).order_by(Job.fit_score.desc(), Job.created_at.desc())).scalars().all()
         letters = db.execute(select(Outreach).order_by(Outreach.created_at.desc())).scalars().all()
+        from collections import defaultdict
+        from .db import KV
+        contact_groups = defaultdict(list)
+        contacts_all = db.execute(select(Contact)).scalars().all()
+        for c in contacts_all: contact_groups[c.job_id].append(c)
+        outreach_latest = {}
+        for o in letters: outreach_latest.setdefault(o.job_id, o)
+        rr_states = {}
+        if contacts_all:
+            keys = ['rocketreach:' + c.id for c in contacts_all]
+            for kv in db.execute(select(KV).where(KV.key.in_(keys))).scalars():
+                try: rr_states[kv.key.split(':',1)[1]] = json.loads(kv.value)
+                except (ValueError, TypeError): pass
         events = db.execute(select(Event).order_by(Event.created_at.desc()).limit(35)).scalars().all()
         integration = db.get(Integration, 'gmail')
         cfg = settings()
         return {
             'demo': demo_mode(),
             'resumes': list_resumes(db),
-            'jobs': [json_job(j, db) for j in jobs],
+            'jobs': [json_job(j, db, contact_groups[j.id], outreach_latest.get(j.id), rr_states) for j in jobs],
             'outreach': [json_outreach(o) for o in letters],
             'events': [{'action': e.action, 'details': json.loads(e.details or '{}'),
                         'at': e.created_at.isoformat(), 'job_id': e.job_id} for e in events],
@@ -251,8 +265,6 @@ def overview(user: str = Depends(owner)):
                 'scheduler_ready': bool(env('CRON_SECRET')),
                 'scheduler_interval_minutes': int(get_kv(db, 'scheduler_interval_minutes', '5')),
                 'scheduler_last_tick': get_kv(db, 'scheduler_last_tick', ''),
-                'github_counter_count': int(get_kv(db, 'github_counter_count', '0')),
-                'github_counter_last_at': get_kv(db, 'github_counter_last_at', ''),
                 'scheduler_send_last_run': get_kv(db, 'scheduler_send_last_run', ''),
                 'scheduler_send_last_success': get_kv(db, 'scheduler_send_last_success', ''),
                 'scheduler_send_last_result': get_kv(db, 'scheduler_send_last_result', ''),
@@ -680,10 +692,15 @@ def mark_reply_action_done(outreach_id: str, data: ReplyActionInput, user: str =
 
 
 @app.get('/api/automation/progress')
-def automation_progress(user: str = Depends(owner)):
+def automation_progress(job_ids: str = '', user: str = Depends(owner)):
     """Contact-level progress and audit events; UI polls this endpoint."""
     with session() as db:
-        jobs = db.execute(select(Job).order_by(Job.created_at.desc()).limit(100)).scalars().all()
+        selected_ids = [x for x in job_ids.split(',') if x][:250]
+        query = select(Job).where(Job.id.in_(selected_ids)) if selected_ids else select(Job).order_by(Job.created_at.desc()).limit(100)
+        jobs = db.execute(query).scalars().all()
+        if selected_ids:
+            positions = {value: index for index,value in enumerate(selected_ids)}
+            jobs.sort(key=lambda j: positions.get(j.id,999))
         ids = [j.id for j in jobs]
         if not ids:
             return {'jobs': [], 'events': []}
@@ -1112,56 +1129,6 @@ def run_automation_now(user: str = Depends(owner)):
         result = process_pending(db, limit=3)
         db.commit()
         return {'automation': result}
-
-
-@app.post('/api/cron/github-counter')
-def github_counter_heartbeat(request: Request):
-    """GitHub-only counter. Deliberately cannot send emails, monitor replies, or run automation."""
-    secret = env('CRON_SECRET')
-    if not secret or not hmac.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
-        raise HTTPException(401, 'Invalid GitHub counter credential')
-    from sqlalchemy import text as sql_text
-    with session() as db:
-        if db.bind.dialect.name == 'postgresql':
-            db.execute(sql_text('SELECT pg_advisory_xact_lock(60519372)'))
-        at = now()
-        minute = at.strftime('%Y-%m-%dT%H:%MZ')
-        if get_kv(db, 'github_counter_last_minute', '') == minute:
-            return {'ok': True, 'duplicate_minute': True,
-                    'count': int(get_kv(db, 'github_counter_count', '0')),
-                    'last_at': get_kv(db, 'github_counter_last_at', '')}
-        value = int(get_kv(db, 'github_counter_count', '0')) + 1
-        set_kv(db, 'github_counter_count', str(value))
-        set_kv(db, 'github_counter_last_at', at.isoformat())
-        set_kv(db, 'github_counter_last_minute', minute)
-        db.flush()
-        return {'ok': True, 'count': value, 'last_at': at.isoformat()}
-
-
-@app.get('/api/cron/probe')
-def scheduler_probe(request: Request):
-    """Safe scheduler integration test: persist a heartbeat, never send mail."""
-    secret = env('CRON_SECRET')
-    if not secret or not hmac.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
-        raise HTTPException(401, 'Invalid scheduler credential')
-    with session() as db:
-        count = int(get_kv(db, 'schedule_probe_count', '0')) + 1
-        at = now().isoformat()
-        set_kv(db, 'schedule_probe_count', str(count))
-        set_kv(db, 'schedule_probe_last_at', at)
-        log(db, 'schedule_probe_invoked', count=count, at=at)
-        db.flush()
-        return {'ok': True, 'count': count, 'last_at': at, 'sent_emails': 0}
-
-
-@app.get('/api/cron/probe/status')
-def scheduler_probe_status(user: str = Depends(owner)):
-    """Signed-in owner can inspect actual persisted probe invocations."""
-    with session() as db:
-        return {'count': int(get_kv(db, 'schedule_probe_count', '0')),
-                'last_at': get_kv(db, 'schedule_probe_last_at', ''),
-                'has_run': bool(get_kv(db, 'schedule_probe_last_at', '')),
-                'mode': 'database-heartbeat-only; no Gmail sends'}
 
 
 @app.get('/api/cron/tick')

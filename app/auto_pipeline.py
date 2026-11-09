@@ -56,8 +56,9 @@ def process_pending(db, limit=4):
     """Idempotent across successful drafts; unresolved contact lookup is retried on later ticks."""
     if demo_mode() or not enabled(db):
         return {'processed': 0, 'scheduled': 0}
-    rows = db.execute(select(Outreach).where(Outreach.status == 'pending_contact')
-                      .order_by(Outreach.created_at).limit(limit).with_for_update(skip_locked=True)).scalars().all()
+    first = db.execute(select(Outreach.job_id).where(Outreach.status == 'pending_contact').order_by(Outreach.created_at, Outreach.id).limit(1)).scalar_one_or_none()
+    if first is None: return {'processed': 0, 'scheduled': 0}
+    rows = db.execute(select(Outreach).where(Outreach.status == 'pending_contact', Outreach.job_id == first).order_by(Outreach.created_at, Outreach.id).limit(limit).with_for_update(skip_locked=True)).scalars().all()
     scheduled = 0
     for row in rows:
         job = db.get(Job, row.job_id)
