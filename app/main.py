@@ -595,6 +595,11 @@ def delete_imported_job(job_id: str, user: str = Depends(owner)):
         log(db, 'imported_job_deleted', job_id, company=job.company, title=job.title,
             contacts=len(contact_ids), unsent_outreach=len(rows))
         db.delete(job)
+        try:
+            db.flush()
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(409, 'Database could not delete this job; check dependent records: ' + type(exc).__name__)
         return {'deleted': True, 'archived': False, 'job_id': job_id}
 
 
