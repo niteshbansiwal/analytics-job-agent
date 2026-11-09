@@ -1,0 +1,23 @@
+name: Atlas scheduled email worker
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Poll pending reviewed emails
+        env:
+          ATLAS_CRON_SECRET: ${{ secrets.ATLAS_CRON_SECRET }}
+        run: |
+          if [ -z "$ATLAS_CRON_SECRET" ]; then
+            echo 'ATLAS_CRON_SECRET is missing; no request made.' >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --retry 2 --retry-delay 5 \
+            --header "Authorization: Bearer $ATLAS_CRON_SECRET" \
+            https://analytics-job-agent.vercel.app/api/cron/tick
