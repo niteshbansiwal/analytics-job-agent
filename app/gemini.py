@@ -112,6 +112,23 @@ def _keyword_selection(title: str, jd: str) -> list[str]:
     return ['dashboards', 'amex_sme', 'stakeholders']
 
 
+def _anchor_relevant_fact(ids: list[str], title: str, jd: str) -> list[str]:
+    """Keep the strongest verified achievement for an explicit role focus."""
+    role = title.lower()
+    evidence = (title + ' ' + jd).lower()
+    if any(w in evidence for w in ('fraud', 'credit risk', 'risk analytics')):
+        required = 'plivo_fraud'
+    elif any(w in role for w in ('data science', 'machine learning', 'forecast')):
+        required = 'zs_forecasting'
+    elif any(w in evidence for w in ('pricing', 'margin', 'revenue')):
+        required = 'plivo_margin'
+    elif any(w in evidence for w in ('dashboard', 'visualization', 'business intelligence')):
+        required = 'dashboards'
+    else:
+        return ids
+    return [required] + [fact_id for fact_id in ids if fact_id != required][:2]
+
+
 def _validated_ids(raw: str) -> list[str]:
     parsed = json.loads(raw)
     if not isinstance(parsed, dict) or not isinstance(parsed.get('fact_ids'), list):
@@ -163,6 +180,7 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         mode = 'facts_only_fallback'
         warning = 'Email model returned invalid fact IDs: ' + str(exc)[:170] + '. Showing a facts-only draft.'
 
+    ids = _anchor_relevant_fact(ids, title, jd)
     # The AI cannot inject unsupported claims into this output: all achievement
     # sentences are assembled from the allowlist above.
     first_name = (contact_name or '').strip().split(' ')[0]
