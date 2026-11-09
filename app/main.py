@@ -251,6 +251,8 @@ def overview(user: str = Depends(owner)):
                 'scheduler_ready': bool(env('CRON_SECRET')),
                 'scheduler_interval_minutes': int(get_kv(db, 'scheduler_interval_minutes', '5')),
                 'scheduler_last_tick': get_kv(db, 'scheduler_last_tick', ''),
+                'github_counter_count': int(get_kv(db, 'github_counter_count', '0')),
+                'github_counter_last_at': get_kv(db, 'github_counter_last_at', ''),
                 'scheduler_send_last_run': get_kv(db, 'scheduler_send_last_run', ''),
                 'scheduler_send_last_success': get_kv(db, 'scheduler_send_last_success', ''),
                 'scheduler_send_last_result': get_kv(db, 'scheduler_send_last_result', ''),
@@ -1110,6 +1112,30 @@ def run_automation_now(user: str = Depends(owner)):
         result = process_pending(db, limit=3)
         db.commit()
         return {'automation': result}
+
+
+@app.post('/api/cron/github-counter')
+def github_counter_heartbeat(request: Request):
+    """GitHub-only counter. Deliberately cannot send emails, monitor replies, or run automation."""
+    secret = env('CRON_SECRET')
+    if not secret or not hmac.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
+        raise HTTPException(401, 'Invalid GitHub counter credential')
+    from sqlalchemy import text as sql_text
+    with session() as db:
+        if db.bind.dialect.name == 'postgresql':
+            db.execute(sql_text('SELECT pg_advisory_xact_lock(60519372)'))
+        at = now()
+        minute = at.strftime('%Y-%m-%dT%H:%MZ')
+        if get_kv(db, 'github_counter_last_minute', '') == minute:
+            return {'ok': True, 'duplicate_minute': True,
+                    'count': int(get_kv(db, 'github_counter_count', '0')),
+                    'last_at': get_kv(db, 'github_counter_last_at', '')}
+        value = int(get_kv(db, 'github_counter_count', '0')) + 1
+        set_kv(db, 'github_counter_count', str(value))
+        set_kv(db, 'github_counter_last_at', at.isoformat())
+        set_kv(db, 'github_counter_last_minute', minute)
+        db.flush()
+        return {'ok': True, 'count': value, 'last_at': at.isoformat()}
 
 
 @app.get('/api/cron/probe')
