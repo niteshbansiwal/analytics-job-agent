@@ -1,7 +1,6 @@
 name: Atlas scheduled email worker
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  # Legacy manual recovery only; Vercel Schedules now owns automatic dispatch.
   workflow_dispatch:
 permissions:
   contents: read
