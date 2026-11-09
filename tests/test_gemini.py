@@ -3,6 +3,24 @@ import json
 import pytest
 from app import gemini
 
+JD = ('Own SQL-driven analytics, reporting and stakeholder decision support '
+      'for payment clients, including dashboard strategy, commercial insights, '
+      'automation, and collaboration with product teams.')
+
+def drafted(*, subject='Analytics Manager at Visa | Relevant analytics impact',
+            body=None, ids=None):
+    if body is None:
+        body = ('Hi [FIRST_NAME],\n\n'
+                'Your Visa analytics manager role emphasizes SQL-based decision '
+                'support and payments reporting. At American Express, I own '
+                'analytics projects end to end, from scoping to field rollout, '
+                'while leading a team of two analysts. At Plivo, I built '
+                'dashboards with QuickSight, Power BI and Tableau. '
+                'I would value a short conversation about the decisions your '
+                'team is trying to improve.\n\nRegards,\nNitesh Bansiwal')
+    return json.dumps({'subject': subject, 'body': body,
+                       'fact_ids': ids or ['dashboards', 'stakeholders']})
+
 
 def test_gemini_connection_smoke_test_is_minimal(monkeypatch):
     prompts = []
@@ -16,113 +34,83 @@ def test_gemini_connection_smoke_test_is_minimal(monkeypatch):
     assert 'ATLAS_OK' in prompts[0]
 
 
-def test_gemini_preview_selects_only_approved_career_fact_ids(monkeypatch):
+def test_model_authors_complete_email_from_saved_prompt_and_jd(monkeypatch):
     prompts = []
     def fake(prompt, **kwargs):
         prompts.append(prompt)
         assert kwargs['json_output'] is True
-        return json.dumps({'fact_ids': ['dashboards', 'amex_sme', 'stakeholders']})
+        return drafted()
     monkeypatch.setattr(gemini, 'gemini_text', fake)
-    result = gemini.build_email_preview('Visa', 'Analytics Manager',
-        'SQL Tableau dashboards for payment clients', 'Jane Recruiter')
+    instruction = 'Use punchy bullet points and show how I create business value.'
+    result = gemini.build_email_preview('Visa', 'Analytics Manager', JD,
+                                        'Jane Recruiter', instruction)
     assert result['mode'] == 'ai_email'
-    assert result['selected_fact_ids'] == ['dashboards', 'amex_sme', 'stakeholders']
-    assert 'At American Express' in result['body']
+    assert result['prompt_source'] == 'custom'
+    assert result['prompt_characters'] == len(instruction)
+    assert len(result['prompt_fingerprint']) == 12
+    assert instruction in prompts[0]
+    assert JD in prompts[0]
+    assert 'Your Visa analytics manager role' in result['body']
     assert 'Hi Jane,' in result['body']
-    assert '8+ years' not in result['body']
+    assert '[FIRST_NAME]' not in result['body']
+    assert 'Jane Recruiter' not in prompts[0]  # contact name stays private
+    assert result['selected_fact_ids'] == ['dashboards', 'stakeholders']
     assert result['gmail_draft_created'] is False
     assert result['email_sent'] is False
     assert result['resume_generated'] is False
-    assert 'Jane Recruiter' not in prompts[0]  # no contact PII to model
-    assert 'nitesh.bansiwal23@gmail.com' not in prompts[0]
 
 
-def test_gemini_invalid_response_falls_back_without_inventing_facts(monkeypatch):
+def test_model_email_not_overwritten_by_fixed_fact_bullets(monkeypatch):
+    body = ('Hi [FIRST_NAME],\n\nThe Visa Analytics Manager position '
+            'requires decisions built on clear commercial analytics. '
+            'I have owned field-facing analytics delivery at American Express '
+            'and developed reporting at Plivo. I would like to compare '
+            'approaches to payments decision support with your team.\n\n'
+            'Thanks,\nNitesh Bansiwal')
     monkeypatch.setattr(gemini, 'gemini_text',
-        lambda prompt, **kwargs: '{"fact_ids":["made_up_experience"]}')
-    result = gemini.build_email_preview('Example', 'Revenue Analytics Manager',
-        'Pricing and sales reporting')
-    assert result['mode'] == 'facts_only_fallback'
-    assert result['selected_fact_ids'] == ['amex_sme', 'plivo_margin', 'dashboards']
-    assert 'made_up_experience' not in result['body']
-    assert '15%' in result['body'] and 'Plivo' in result['body']
-    assert result['warning']
+                        lambda *args, **kwargs: drafted(body=body))
+    result = gemini.build_email_preview('Visa', 'Analytics Manager', JD, 'Yashaswini')
+    assert 'Hi Yashaswini,' in result['body']
+    assert 'Thanks,\nNitesh Bansiwal' in result['body']
+    assert result['body'].count('At Plivo, I built dashboards') == 0
 
 
-def test_risk_role_keeps_verified_fraud_achievement_when_model_misses_it(monkeypatch):
+def test_invalid_response_fails_closed_not_generic_fallback(monkeypatch):
     monkeypatch.setattr(gemini, 'gemini_text',
-        lambda prompt, **kwargs: '{"fact_ids":["dashboards","stakeholders"]}')
-    result = gemini.build_email_preview('BharatPe', 'Senior Manager, Risk Analytics',
-                                        'Credit risk portfolio analytics', 'Ishika Jain')
-    assert result['mode'] == 'ai_email'
-    assert result['selected_fact_ids'][0] == 'plivo_fraud'
-    assert 'At Plivo, I led an SMS fraud detection tool' in result['body']
-    assert 'Hi Ishika,' in result['body']
+                        lambda *args, **kwargs: '{"fact_ids":["made_up_experience"]}')
+    with pytest.raises(gemini.GeminiError):
+        gemini.build_email_preview('Visa', 'Analytics Manager', JD)
 
 
-def test_custom_email_prompt_uses_jd_and_model_prose_without_new_claims(monkeypatch):
-    prompts = []
+def test_model_unsupported_numeric_claim_is_blocked(monkeypatch):
+    body = ('Hi [FIRST_NAME],\n\nThe Visa Analytics Manager role '
+            'needs SQL reporting and business decision support. '
+            'I managed 300 analysts for 15 years and generated '
+            'enormous revenue for the business. I would welcome '
+            'a discussion about the analytics challenges you face. '
+            'Thank you for your consideration.\n\nRegards,\nNitesh Bansiwal')
+    monkeypatch.setattr(gemini, 'gemini_text',
+                        lambda *args, **kwargs: drafted(body=body))
+    with pytest.raises(gemini.GeminiError, match='unsupported numerical'):
+        gemini.build_email_preview('Visa', 'Analytics Manager', JD)
+
+
+def test_timeout_and_quota_errors_do_not_send_or_fallback(monkeypatch):
+    calls = []
     def fake(prompt, **kwargs):
-        prompts.append(prompt)
-        return json.dumps({'fact_ids':['dashboards','stakeholders'],
-            'opening':'I saw the role at Visa and was interested in its dashboard reporting work.',
-            'closing':'I would welcome a conversation about your analytics team.'})
-    monkeypatch.setattr(gemini, 'gemini_text', fake)
-    result = gemini.build_email_preview('Visa','Analytics Manager',
-        'Own dashboard reporting and SQL analysis for payment clients.',
-        'Jane Recruiter', 'Keep the email direct and specific to the JD.')
-    assert 'Keep the email direct' in prompts[0]
-    assert 'dashboard reporting and SQL analysis' in prompts[0]
-    assert 'Jane Recruiter' not in prompts[0]
-    assert 'I saw the role at Visa' in result['body']
-    assert 'At Plivo, I built dashboards' in result['body']
-    assert result['email_sent'] is False
-
-
-def test_model_claim_in_opening_is_discarded(monkeypatch):
-    monkeypatch.setattr(gemini, 'gemini_text', lambda *args, **kwargs:
-        '{"fact_ids":["dashboards","stakeholders"],'
-        '"opening":"I managed 300 analysts at Visa for 15 years.",'
-        '"closing":"I would welcome a brief conversation about the role."}')
-    result = gemini.build_email_preview('Visa','Analytics Manager','SQL dashboards')
-    assert '300 analysts' not in result['body']
-
-
-
-def test_timeout_uses_facts_only_draft_without_repeat_api_call(monkeypatch):
-    calls = []
-    def fake(prompt, *, model=None, **kwargs):
-        calls.append(model or 'primary')
-        raise gemini.GeminiError('Email model request timed out after 15 seconds',
-                                 retryable=True)
-    monkeypatch.setattr(gemini, 'gemini_text', fake)
-    result = gemini.build_email_preview('Visa', 'Decision Analytics Manager',
-                                        'SQL Tableau dashboards')
-    assert calls == ['primary']
-    assert result['mode'] == 'facts_only_fallback'
-    assert 'timed out' in result['warning']
-    assert result['email_sent'] is False
-
-
-def test_quota_error_does_not_repeat_api_call(monkeypatch):
-    calls = []
-    def fail(prompt, **kwargs):
         calls.append(1)
         raise gemini.GeminiError('Gemini quota or rate limit exceeded (HTTP 429)')
-    monkeypatch.setattr(gemini, 'gemini_text', fail)
-    result = gemini.build_email_preview('Visa', 'Decision Analytics Manager', 'SQL')
+    monkeypatch.setattr(gemini, 'gemini_text', fake)
+    with pytest.raises(gemini.GeminiError, match='429'):
+        gemini.build_email_preview('Visa', 'Analytics Manager', JD)
     assert len(calls) == 1
-    assert result['mode'] == 'facts_only_fallback'
 
 
-def test_gemini_api_quota_error_is_visible_in_fallback(monkeypatch):
-    def fail(prompt, **kwargs):
-        raise gemini.GeminiError('Gemini quota or rate limit exceeded (HTTP 429)')
-    monkeypatch.setattr(gemini, 'gemini_text', fail)
-    result = gemini.build_email_preview('Example', 'Credit Risk Manager', 'Fraud risk')
-    assert result['mode'] == 'facts_only_fallback'
-    assert '429' in result['warning']
-    assert result['email_sent'] is False
+def test_missing_detailed_jd_blocks_generic_email(monkeypatch):
+    monkeypatch.setattr(gemini, 'gemini_text',
+                        lambda *args, **kwargs: drafted())
+    with pytest.raises(gemini.GeminiError, match='Detailed job description'):
+        gemini.build_email_preview('Visa', 'Analytics Manager', 'SQL')
 
 
 def test_gemini_validates_ids_before_use():
