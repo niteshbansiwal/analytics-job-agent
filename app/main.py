@@ -576,6 +576,7 @@ def delete_imported_job(job_id: str, user: str = Depends(owner)):
             job.status = 'archived'
             log(db, 'job_archived_preserving_sent_history', job_id, outreach_count=len(rows))
             return {'deleted': False, 'archived': True, 'job_id': job_id}
+        from .integrations import gmail_delete_draft
         for row in rows:
             if row.gmail_draft_id:
                 try:
