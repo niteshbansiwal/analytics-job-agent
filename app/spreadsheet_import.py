@@ -188,6 +188,7 @@ def _import_contacts(db, job, item, number, errors):
     from .db import Outreach
     existing = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
     created = 0
+    included_ids = []
     for index in (1, 2):
         prefix = f'contact_{index}_'
         name = item.get(prefix + 'name', '').strip()[:120]
@@ -214,6 +215,7 @@ def _import_contacts(db, job, item, number, errors):
                       (email and c.email and c.email.casefold() == email.casefold()) or
                       (name and c.name.casefold() == name.casefold() and not c.linkedin_url and not c.email)), None)
         if match:
+            included_ids.append(match.id)
             changed = False
             if name and match.name == 'Hiring Team': match.name, changed = name, True
             if profile and not match.linkedin_url: match.linkedin_url, changed = profile, True
@@ -237,12 +239,14 @@ def _import_contacts(db, job, item, number, errors):
         db.add(contact)
         db.flush()
         existing.append(contact)
+        included_ids.append(contact.id)
         created += 1
-    return created
+    return created, included_ids
 
 def import_rows(db, rows):
     created, duplicates, skipped, contacts_created = 0, 0, 0, 0
     errors, ids, seen = [], [], set()
+    batch_contacts = {}
     possible_duplicates, duplicate_candidates = 0, []
     for number, item in rows:
         company = item.get('company', '').strip()[:180]
@@ -262,10 +266,11 @@ def import_rows(db, rows):
             post_url=url, apply_url=item.get('apply_url', ''))
         if exact:
             duplicates += 1
-            recovered = _import_contacts(db, exact, item, number, errors)
+            recovered, contact_ids = _import_contacts(db, exact, item, number, errors)
             contacts_created += recovered
-            if recovered:
+            if contact_ids:
                 ids.append(exact.id)
+                batch_contacts[exact.id] = contact_ids
                 log(db, 'spreadsheet_existing_job_contacts_recovered', exact.id, row=number, contacts=recovered)
             continue
         if candidates:
@@ -312,13 +317,15 @@ def import_rows(db, rows):
         if candidates:
             log(db, 'possible_duplicate_requires_review', job.id,
                 candidate_ids=[x['job_id'] for x in candidates], row=number)
-        contacts_created += _import_contacts(db, job, item, number, errors)
+        added, contact_ids = _import_contacts(db, job, item, number, errors)
+        contacts_created += added
+        batch_contacts[job.id] = contact_ids
     return {
         'created': created, 'duplicates': duplicates, 'skipped': skipped,
         'possible_duplicates': possible_duplicates,
         'duplicate_candidates': duplicate_candidates[:20],
         'contacts_created': contacts_created, 'rows_read': len(rows),
-        'job_ids': ids, 'errors': errors[:30],
+        'job_ids': ids, 'batch_contacts': batch_contacts, 'errors': errors[:30],
         'note': 'Contact claims remain unverified. Import queues outreach; no messages are sent synchronously.',
     }
 

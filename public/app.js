@@ -1,4 +1,4 @@
-const state = { data:null, dashboard:null, page:'overview', selected:'', filter:'all', search:'', dashboardFilter:'all', dashboardPage:1, jobPage:1, importIds:[], refreshBusy:false };
+const state = { data:null, dashboard:null, page:'overview', selected:'', filter:'all', search:'', dashboardFilter:'all', dashboardPage:1, jobPage:1, importIds:[], importBatchId:localStorage.getItem('atlas_last_import_batch')||'', refreshBusy:false };
 let rrAutoTimer=null;
 let rrBusy=false;
 const $ = id => document.getElementById(id);
@@ -14,13 +14,13 @@ async function load(){if(state.refreshBusy)return;state.refreshBusy=true;try{con
 function showLogin(){$('page-content').innerHTML=`<section class="panel" style="margin:70px auto;max-width:520px;padding:40px;text-align:center"><div style="font-size:35px">✳</div><h1>Welcome to Atlas</h1><p class="summary-mini">A private workspace for research, approvals and Gmail outreach. Sign in with the Google account configured as the owner.</p><a class="btn btn-dark" href="/api/auth/google/start">Sign in with Google ↗</a></section>`}
 function showSetup(){$('page-content').innerHTML=`<section class="panel" style="margin:70px auto;max-width:650px;padding:40px;text-align:center"><div style="font-size:35px">✳</div><h1>One more step: connect the database</h1><p class="summary-mini">Your Google sign-in worked, but Atlas needs persistent PostgreSQL storage before real job search and approvals can be saved. No data has been lost or emailed.</p><a class="btn btn-dark" href="https://vercel.com/dashboard/stores" target="_blank" rel="noopener noreferrer">Set up PostgreSQL ↗</a> &nbsp; <a class="btn btn-ghost" href="/">View setup checklist</a></section>`}
 function setPage(page){state.page=page;render();window.scrollTo({top:0,behavior:'smooth'});$('app-shell').classList.remove('open')}
-function render(){if(!state.data)return;const d=state.data;document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.page===state.page));const labels={overview:'Overview',jobs:'Imported jobs',outbox:'Outreach queue',activity:'Activity log',settings:'Configuration',progress:'Import progress'};$('breadcrumb-page').textContent=labels[state.page];$('nav-job-count').textContent=d.jobs.filter(j=>j.status==='discovered').length;
+function render(){if(!state.data)return;const d=state.data;document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.page===state.page));const labels={overview:'Overview',jobs:'Imported jobs',outbox:'Outreach queue',activity:'Activity log',settings:'Configuration'};$('breadcrumb-page').textContent=labels[state.page];$('nav-job-count').textContent=d.jobs.filter(j=>j.status==='discovered').length;
 $('run-note').textContent=d.integrations.gemini?'AI email review · Scheduled sends require active scheduler':'ChatGPT approvals → Excel → Atlas';
 $('demo-banner').innerHTML=d.demo?`<div class="notice"><i>!</i><div><strong>DEMO ENVIRONMENT</strong> — All five sample companies and openings are fictional. No real jobs, contacts, messages or emails are being sent. Connect integrations for live use.</div></div>`:(!d.jobs.length)?`<div class="notice"><i>⇧</i><div><strong>READY FOR YOUR FIRST IMPORT</strong> — Review and approve jobs in ChatGPT, then upload the approved Excel/CSV file. No paid AI API is needed.</div></div>`:'';
 const connections=[['Google Gmail','G',d.integrations.gmail],['Spreadsheet import','▤',true],['RocketReach','R',d.integrations.rocketreach],['Email drafting model','✦',d.integrations.gemini]];
 $('sidebar-connections').innerHTML=connections.map(x=>`<div class="side-connection"><span class="service-icon">${x[1]}</span><span>${x[0]}</span><span class="service-status ${x[2]?'connected':''}" title="${x[2]?'Configured':'Not configured'}"></span></div>`).join('');
 $('metrics').innerHTML=metricCards();$('metrics').style.display=['overview','jobs'].includes(state.page)?'grid':'none';
-const view=$('main-view');if(state.page==='overview'||state.page==='jobs'){view.innerHTML=`<div class="content-grid">${jobPanel()}${detailPanel()}</div>`}else if(state.page==='progress'){view.innerHTML=progressPage()}else if(state.page==='outbox'){view.innerHTML=outboxPanel()}else if(state.page==='activity'){view.innerHTML=activityPanel()}else{view.innerHTML=settingsPanel()}
+const view=$('main-view');if(state.page==='overview'||state.page==='jobs'){view.innerHTML=`<div class="content-grid">${jobPanel()}${detailPanel()}</div>`}else if(state.page==='outbox'){view.innerHTML=outboxPanel()}else if(state.page==='activity'){view.innerHTML=activityPanel()}else{view.innerHTML=settingsPanel()}
  scheduleRocketReachRecheck();
 }
 function metricCards(){const d=state.data;const approved=d.jobs.filter(j=>['approved','reply_received'].includes(j.status)).length;const scheduled=d.outreach.filter(o=>['draft_ready','scheduled','followup_scheduled','demo_draft','awaiting_gmail','pending_contact'].includes(o.status)).length;const replies=d.outreach.filter(o=>o.last_reply_at).length;
@@ -32,7 +32,7 @@ return [
 ].map(x=>`<div class="metric"><div class="metric-top"><span>${x[0]}</span><span class="metric-icon ${x[4]}">${x[3]}</span></div><div class="metric-number">${x[1]}</div><div class="metric-trend">${x[2]}</div></div>`).join('')}
 function jobsFiltered(){let jobs=state.data.jobs.filter(j=>j.status!=='archived').filter(j=>state.filter==='all'||(state.filter==='new'&&j.status==='discovered')||(state.filter==='approved'&&j.status==='approved')||(state.filter==='replies'&&j.status==='reply_received'));
 if(state.search){const q=state.search.toLowerCase();jobs=jobs.filter(j=>(j.company+' '+j.title+' '+j.location).toLowerCase().includes(q))}return jobs}
-function jobPanel(){let jobs=jobsFiltered();return `<section class="panel"><div class="panel-head"><div><h2>${state.page==='overview'?'Recommended opportunities':'Job discovery'}</h2><small>Ranked by skills, leadership fit and contact accessibility</small></div><div><button class="link-button" data-action="show-progress">◷ Automation progress</button> <button class="link-button" data-action="import">+ Add job</button></div></div><div class="filters">${[['all','All roles'],['new','New'],['approved','Approved'],['replies','Replies']].map(([k,t])=>`<button class="filter ${state.filter===k?'active':''}" data-filter="${k}">${t}</button>`).join('')}<input class="search-field" id="job-search" value="${escapeHtml(state.search)}" placeholder="⌕ Search roles..." aria-label="Search roles"></div><div class="job-list">${jobs.length?jobs.slice((state.jobPage-1)*20,state.jobPage*20).map(jobCard).join(''):`<div class="empty"><div class="empty-icon">⌕</div>No matching jobs in this view.</div>`}</div><p style="padding:10px">Page ${state.jobPage} / ${Math.max(1,Math.ceil(jobs.length/20))} <button data-action="jobs-prev">Previous</button> <button data-action="jobs-next">Next</button></p></section>`}
+function jobPanel(){let jobs=jobsFiltered();return `<section class="panel"><div class="panel-head"><div><h2>${state.page==='overview'?'Recommended opportunities':'Job discovery'}</h2><small>Ranked by skills, leadership fit and contact accessibility</small></div><div><button class="link-button" data-action="show-progress">◷ Last upload progress</button> <button class="link-button" data-action="import">+ Add job</button></div></div><div class="filters">${[['all','All roles'],['new','New'],['approved','Approved'],['replies','Replies']].map(([k,t])=>`<button class="filter ${state.filter===k?'active':''}" data-filter="${k}">${t}</button>`).join('')}<input class="search-field" id="job-search" value="${escapeHtml(state.search)}" placeholder="⌕ Search roles..." aria-label="Search roles"></div><div class="job-list">${jobs.length?jobs.slice((state.jobPage-1)*20,state.jobPage*20).map(jobCard).join(''):`<div class="empty"><div class="empty-icon">⌕</div>No matching jobs in this view.</div>`}</div><p style="padding:10px">Page ${state.jobPage} / ${Math.max(1,Math.ceil(jobs.length/20))} <button data-action="jobs-prev">Previous</button> <button data-action="jobs-next">Next</button></p></section>`}
 function jobCard(j){return `<div class="job-card ${j.id===state.selected?'selected':''}" data-job="${j.id}" tabindex="0"><div class="company-icon">${escapeHtml(initials(j.company))}</div><div class="job-summary"><div class="job-row-top"><div><div class="job-title">${escapeHtml(j.title)}</div><div class="job-company">${escapeHtml(j.company)} · ${escapeHtml(j.location)}</div></div><div class="mini-score">${Number(j.fit_score).toFixed(1)} <small>/10</small></div></div><div class="job-tags"><span class="tag soft">${escapeHtml(j.arrangement)}</span><span class="tag ${j.is_demo?'demo':''}">${j.is_demo?'DEMO':escapeHtml(j.source)}</span>${j.status==='discovered'?'':`<span class="tag green">${escapeHtml(j.status.replaceAll('_',' '))}</span>`}</div><div class="job-bottom"><span>◷ ${escapeHtml(j.post_age)}</span><span><strong>${j.contacts.length}</strong> contacts identified</span>${!j.is_demo?`<button type="button" class="btn btn-small btn-red" data-action="delete-job" data-id="${j.id}" title="Remove job from imported jobs">Delete</button>`:''}</div></div></div>`}
 
 function contactCard(c,index){if(!c)return `<div class="contact-unknown">Contact ${index} — Not identified. No hiring relationship or email is assumed.</div>`;
@@ -81,8 +81,8 @@ ${(d.resumes||[]).map(r=>`<form class="fixed-resume-form" data-kind="${r.id}" st
 ${r.configured?'<label class="hint"><input type="checkbox" name="replace" required> Replace the saved PDF for future drafts</label>':''}
 <button type="submit" class="btn btn-dark" style="margin-top:10px">${r.configured?'Replace':'Save'} PDF</button></form>`).join('')}
 <p class="hint">Existing Gmail drafts keep their original attachment until you explicitly replace the draft.</p></div></div>`}
-function modal(html){$('form-dialog').classList.remove('review-modal');$('modal-inner').innerHTML=html;$('form-dialog').showModal()}
-function closeModal(){$('form-dialog').close()}
+function modal(html){$('form-dialog').classList.remove('review-modal');$('modal-inner').innerHTML=html;if(!$('form-dialog').open)$('form-dialog').showModal()}
+function closeModal(){stopAutomationProgress();$('form-dialog').close()}
 function importDialog(){modal(`<h2>Add a job posting</h2><p>Paste a real job link and the information visible on the page. Imported records are marked unverified until investigated.</p><form id="import-form"><label class="form-label">Company *</label><input class="form-input" name="company" required maxlength="180" placeholder="Company name"><label class="form-label">Job title *</label><input class="form-input" name="title" required maxlength="220" placeholder="Analytics Manager"><label class="form-label">Original post URL *</label><input class="form-input" name="post_url" type="url" pattern="https://.*" required placeholder="https://..."><label class="form-label">Location</label><input class="form-input" name="location" placeholder="Gurugram"><label class="form-label">Job description (optional)</label><textarea class="form-input form-textarea" name="jd" maxlength="6000" placeholder="Paste job description..."></textarea><button class="btn btn-dark" type="submit">Add to pipeline ↗</button></form>`)}
 
 function sheetDialog(){
@@ -100,32 +100,86 @@ function sheetDialog(){
  <button class="btn btn-ghost" type="submit" style="margin-top:10px">Import pasted CSV ↗</button></form>
  <p class="hint">Imported posting dates, job details and hiring relationships are marked unverified until you check the original sources. Import queues outreach; Vercel sends scheduled emails.</p>`);
 }
-let atlasProgressTimer=null;
-async function showAutomationProgress(){state.page='progress';render();await refreshAutomationProgress();return;
 
- clearInterval(atlasProgressTimer);
- modal('<h2>Excel outreach · live progress</h2><p>Tracking every job and contact. This panel refreshes every 4 seconds while open.</p><div id="atlas-progress-content">Loading events…</div><button class="btn btn-ghost" data-action="progress-refresh">Refresh progress</button>');
- await refreshAutomationProgress();
- atlasProgressTimer=setInterval(()=>{if(!document.getElementById('atlas-progress-content')){clearInterval(atlasProgressTimer);return}refreshAutomationProgress()},4000);
+let atlasProgressTimer=null;
+let atlasProgressBusy=false;
+function stopAutomationProgress(){
+ if(atlasProgressTimer){clearInterval(atlasProgressTimer);atlasProgressTimer=null;}
+}
+function showAutomationProgress(batchId=state.importBatchId){
+ if(!batchId){
+  modal('<h2>No upload to track</h2><p>Upload an Excel or CSV file to track only its jobs, contacts, drafts and scheduled messages.</p>');
+  return;
+ }
+ state.importBatchId=batchId;
+ stopAutomationProgress();
+ modal('<div style="min-width:min(600px,75vw);max-width:850px"><h2>Excel upload · live progress</h2><p class="hint">Only this upload is shown. Closing this popup does not stop RocketReach enrichment, Gmail drafts, or scheduled sends. Vercel continues processing in the background.</p><div id="atlas-progress-content" aria-live="polite">Loading this upload…</div><div style="display:flex;gap:10px;margin-top:15px"><button type="button" class="btn btn-ghost" data-action="progress-refresh">Refresh now</button><button type="button" class="btn btn-dark" data-action="progress-close">Close tracker</button></div></div>');
+ refreshAutomationProgress();
+ atlasProgressTimer=setInterval(function(){
+  if(!$('form-dialog').open||!$('atlas-progress-content')){stopAutomationProgress();return;}
+  refreshAutomationProgress();
+ },4000);
 }
 async function refreshAutomationProgress(){
- const el=document.getElementById('atlas-progress-content');if(!el)return;
+ const el=$('atlas-progress-content');
+ if(!el||!state.importBatchId||atlasProgressBusy)return;
+ atlasProgressBusy=true;
+ const batchId=state.importBatchId;
  try{
-  const data=await api('/api/automation/progress'+(state.importIds.length?'?job_ids='+encodeURIComponent(state.importIds.join(',')):''));
-  const labels={auto_contact_queued:'Queued',auto_contact_processing:'Processing contact',auto_contact_email_search:'Searching RocketReach',auto_contact_email_found:'Email found',auto_contact_enrichment_pending:'Waiting for RocketReach',auto_draft_building:'Building email draft',auto_gmail_draft_created:'Gmail draft created',auto_email_drafted_and_scheduled:'Scheduled ✓',auto_outreach_failed:'Needs attention',auto_job_no_contacts:'No contacts'};
-  el.innerHTML=data.jobs.map((j,jobIndex)=>{
-   const events=data.events.filter(e=>e.job_id===j.id);
-   const contacts=j.contacts.map((contact,index)=>{
-    const steps=events.filter(e=>e.outreach_id===contact.outreach_id).slice().reverse();
-    const complete=['scheduled','sent','reply_received'].includes(contact.status);
-    const percent=complete?100:contact.status==='needs_attention'?100:steps.some(e=>e.action==='auto_gmail_draft_created')?75:steps.some(e=>e.action==='auto_contact_email_found')?40:steps.length?15:0;
-    return `<div style="padding:10px 0;border-top:1px solid #e5ebf2"><strong>Contact ${index+1}: ${escapeHtml(contact.contact_name)}</strong> · ${escapeHtml(contact.status.replaceAll('_',' '))}<div style="background:#e5ebf2;height:7px;border-radius:8px;margin:9px 0"><div style="background:${contact.status==='needs_attention'?'#dc6464':'#2b967c'};height:7px;width:${percent}%;border-radius:8px"></div></div><small>${escapeHtml(contact.contact_email||'Email not found yet')}</small><div style="max-height:180px;overflow:auto">${steps.map(e=>`<div style="font-size:12px;padding:4px 0">${escapeHtml(new Date(e.at).toLocaleString())} · ${escapeHtml(labels[e.action]||e.action)}${e.details?.error?' — '+escapeHtml(e.details.error):''}</div>`).join('')||'<small>Waiting for worker</small>'}</div></div>`;
-   }).join('');
-   return `<div style="border:1px solid #e5ebf2;border-radius:12px;padding:14px;margin:12px 0"><strong>Job ${jobIndex+1} of ${data.jobs.length}: ${escapeHtml(j.company)} — ${escapeHtml(j.title)}</strong>${contacts||'<p>No contact queued</p>'}</div>`;
-  }).join('')||'<p>No jobs found.</p>';
- }catch(e){el.textContent='Progress unavailable: '+e.message}
+  const data=await api('/api/imports/'+encodeURIComponent(batchId)+'/progress');
+  if(!$('atlas-progress-content')||state.importBatchId!==batchId)return;
+  const summary=data.summary||{};
+  const events=data.events||[];
+  const jobs=data.jobs||[];
+  const contacts=jobs.flatMap(function(job){return job.contacts||[];});
+  const scheduled=contacts.filter(function(c){return !!c.due_at;}).length;
+  const sent=contacts.filter(function(c){return !!c.sent_at;}).length;
+  const attention=contacts.filter(function(c){return c.status==='needs_attention'||c.status==='not_queued';}).length;
+  const names={
+   auto_contact_queued:'Contact queued',auto_contact_processing:'Processing contact',
+   auto_contact_email_search:'Searching RocketReach',
+   auto_contact_email_found:'Email available',
+   auto_contact_enrichment_pending:'Waiting for RocketReach',
+   auto_draft_building:'Generating email',
+   auto_gmail_draft_created:'Gmail draft created',
+   auto_email_drafted_and_scheduled:'Draft verified and email scheduled',
+   auto_outreach_failed:'Needs attention'
+  };
+  let html='<div style="border:1px solid #e4eaf0;border-radius:10px;padding:12px;margin:14px 0">';
+  html+='<strong>'+escapeHtml(data.filename)+'</strong><div class="hint">Uploaded '+fmt(data.created_at)+' · '+jobs.length+' jobs in this upload</div>';
+  html+='<p>'+contacts.length+' contacts · '+scheduled+' scheduled · '+sent+' sent · '+attention+' need attention</p>';
+  html+='<small>'+Number(summary.duplicates||0)+' duplicate rows skipped · '+Number(summary.skipped||0)+' invalid rows skipped</small></div>';
+  jobs.forEach(function(job,index){
+   html+='<div style="border:1px solid #e4eaf0;border-radius:12px;padding:14px;margin:12px 0">';
+   html+='<strong>Job '+(index+1)+' of '+jobs.length+': '+escapeHtml(job.company)+' — '+escapeHtml(job.title)+'</strong>';
+   html+='<div class="hint">Job imported · '+job.contacts.length+' contacts parsed</div>';
+   if(!job.contacts.length)html+='<p class="hint">No usable contacts supplied. No email can be created for this job.</p>';
+   job.contacts.forEach(function(c,contactIndex){
+    const timeline=events.filter(function(e){return e.outreach_id===c.outreach_id;}).slice().reverse();
+    const stages=[['Queued',c.status!=='not_queued'],['Email',!!c.email],['Draft',c.draft_created],['Scheduled',!!c.due_at],['Sent',!!c.sent_at]];
+    const percent=Math.round(stages.filter(function(x){return x[1];}).length*100/stages.length);
+    const label=c.status==='needs_attention'?'Needs attention':c.status==='not_queued'?'Not queued':c.sent_at?'Sent':c.due_at?'Scheduled':c.status==='pending_contact'?'Awaiting background worker / enrichment':String(c.status).replaceAll('_',' ');
+    html+='<div style="padding:12px 0;border-top:1px solid #e4eaf0"><strong>Contact '+(contactIndex+1)+': '+escapeHtml(c.name)+'</strong>';
+    html+='<div class="hint">'+escapeHtml(c.email||'Email not found yet')+' · '+escapeHtml(label)+'</div>';
+    html+='<div style="background:#e7edf2;border-radius:10px;height:7px;margin:9px 0"><div style="height:7px;width:'+percent+'%;border-radius:10px;background:'+(c.status==='needs_attention'?'#cb5252':'#16856e')+'"></div></div>';
+    html+='<small>'+stages.map(function(x){return (x[1]?'✓ ':'○ ')+x[0];}).join(' · ')+'</small>';
+    if(c.due_at)html+='<div class="hint">Scheduled send: '+fmt(c.due_at)+'</div>';
+    if(c.error)html+='<div style="color:#b43c3c;margin-top:6px">Attention: '+escapeHtml(c.error)+'</div>';
+    html+='<div style="max-height:140px;overflow:auto;margin-top:7px">';
+    html+=timeline.map(function(ev){
+     return '<div style="font-size:12px;padding:3px 0">'+fmt(ev.at)+' · '+escapeHtml(names[ev.action]||ev.action)+(ev.details&&ev.details.error?' — '+escapeHtml(ev.details.error):'')+'</div>';
+    }).join('')||'<small>Waiting for background worker</small>';
+    html+='</div></div>';
+   });
+   html+='</div>';
+  });
+  if(!jobs.length)html+='<p>No new jobs or contacts were queued. See the duplicate and invalid row counts above.</p>';
+  html+='<p class="hint">Status refreshes every 4 seconds while this popup is open. Closing it does not affect the backend.</p>';
+  el.innerHTML=html;
+ }catch(error){
+  if($('atlas-progress-content'))el.textContent='Unable to read upload progress: '+error.message;
+ }finally{atlasProgressBusy=false;}
 }
-function progressPage(){return `<div class="section-top"><div><h2>Imported jobs · live automation</h2><p>Job by job, contact by contact; Vercel handles scheduled delivery.</p></div><button class="btn btn-ghost" data-action="progress-refresh">Refresh</button></div><section class="panel" style="padding:18px"><div id="atlas-progress-content">Loading…</div></section>`}
 function sheetResult(result){
  const details=(result.errors||[]).slice(0,20).map(e=>'<li>'+escapeHtml(e)+'</li>').join('');
  modal(`<h2>Import complete</h2><p><strong>${result.created} new jobs</strong> saved in Atlas. ${result.duplicates} duplicate links skipped; ${result.skipped} invalid rows skipped; ${result.contacts_created} potential hiring contacts imported.</p>
@@ -133,6 +187,7 @@ function sheetResult(result){
  <p class="hint">Every imported job remains unverified until you inspect its original posting. No emails were sent.</p>
  <button class="btn btn-dark" type="button" data-action="show-progress">Track automation progress ↗</button> <button class="btn btn-ghost" type="button" id="import-done">View imported jobs</button>`);
 }
+
 async function handleSheetSubmit(form){
  const submit=form.querySelector('button[type="submit"]');
  submit.disabled=true;
@@ -148,20 +203,18 @@ async function handleSheetSubmit(form){
   }else{
    result=await api('/api/jobs/import-csv',{method:'POST',body:JSON.stringify({csv_text:form.querySelector('textarea').value})});
   }
-  await load();
-setInterval(()=>{if(['outbox','settings','overview','jobs','progress'].includes(state.page)&&!document.querySelector('dialog[open]'))load().then(()=>{if(state.page==='progress')refreshAutomationProgress()})},4000);
-  if((result.job_ids||[]).length){
-   state.importIds=result.job_ids;
-   closeModal();setPage('progress');await refreshAutomationProgress();
-   api('/api/automation/run-now',{method:'POST'}).then(()=>refreshAutomationProgress()).catch(e=>toast('Automation worker: '+e.message,true));
-  }else sheetResult(result);
-  toast(result.created+' new jobs; '+result.contacts_created+' contacts added; '+result.duplicates+' existing jobs');
+  if(!result.batch_id)throw Error('Import returned no batch identifier.');
+  state.importBatchId=result.batch_id;
+  localStorage.setItem('atlas_last_import_batch',result.batch_id);
+  closeModal();
+  showAutomationProgress(result.batch_id);
+  load();
+  toast(result.created+' jobs imported; '+result.contacts_created+' contacts added. Vercel worker will process the queue.');
  }catch(err){
   const message=escapeHtml(err.message||'Unable to import this file.');
-  modal(`<h2>Import validation failed</h2><p>${message}</p><p>Atlas accepts both the official <strong>Jobs</strong> template and ChatGPT's <strong>Approved Jobs</strong> export. Check that each row has a company, role and original HTTPS job link.</p><p><a class="btn btn-ghost" href="/api/spreadsheets/template.xlsx" download>↓ Download compatible Excel template</a></p><button class="btn btn-dark" type="button" id="retry-sheet-import">Try another file</button>`);
+  modal('<h2>Import validation failed</h2><p>'+message+'</p><p>Atlas accepts the Jobs template and ChatGPT Approved Jobs export.</p><button class="btn btn-dark" type="button" id="retry-sheet-import">Try another file</button>');
   toast('Import failed — see validation details.',true);
- }
- finally{submit.disabled=false}
+ }finally{submit.disabled=false;}
 }
 
 async function promptDialog(){
@@ -359,6 +412,7 @@ document.addEventListener('click',async e=>{
  if(action==='import')return importDialog();
  if(action==='show-progress')return showAutomationProgress();
  if(action==='progress-refresh')return refreshAutomationProgress();
+ if(action==='progress-close')return closeModal();
  if(action==='reply-read'||action==='reply-action'){try{await api('/api/outreach/'+id+'/'+(action==='reply-read'?'reply-read':'action-done'),{method:'PUT',body:JSON.stringify({value:btn.dataset.value==='true'})});await load()}catch(e){toast(e.message,true)}return}
  if(action==='delete-job'){if(!confirm('Remove this job? Unsent jobs and drafts are deleted. Sent jobs are archived to preserve reply tracking.'))return;try{const result=await api('/api/jobs/'+id,{method:'DELETE'});toast(result.archived?'Job archived; sent conversations preserved.':'Job deleted; you may reimport it.');if(state.selected===id)state.selected='';await load()}catch(e){toast(e.message,true)}return}
  if(action==='contact')return contactDialog(id);
@@ -386,7 +440,8 @@ document.addEventListener('click',async e=>{
 document.addEventListener('change',e=>{if(e.target.id==='reviewed-resume'){reviewedPdfPreviewed=false;if($('review-confirm'))$('review-confirm').checked=false;}});
 document.addEventListener('input',e=>{if(e.target.id==='job-search'){state.search=e.target.value;const sel=state.selected;const caret=e.target.selectionStart;render();state.selected=sel;const next=$('job-search');if(next){next.focus();next.setSelectionRange(caret,caret)}}});
 document.addEventListener('submit',async e=>{if(!['import-form','contact-form','prompt-form','email-prompt-form','schedule-form','holidays-form'].includes(e.target.id))return;e.preventDefault();const form=e.target;const payload=Object.fromEntries(new FormData(form).entries());try{if(form.id==='scheduler-settings-form'){await api('/api/email/scheduler',{method:'PUT',body:JSON.stringify({interval_minutes:Number(payload.interval_minutes)})});closeModal();await load();toast('Worker interval updated');return}if(form.id==='schedule-form'){const local=payload.due_at;const due_at=new Date(local+':00+05:30').toISOString();const result=await api('/api/outreach/'+form.dataset.id+'/schedule',{method:'PUT',body:JSON.stringify({due_at})});closeModal();await load();toast('Scheduled for '+fmt(result.outreach.due_at));return}if(form.id==='holidays-form'){const dates=payload.dates.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);const result=await api('/api/email/holidays',{method:'PUT',body:JSON.stringify({dates})});closeModal();await load();toast('Holidays saved; '+result.rescheduled_ids.length+' pending email(s) moved.');return}if(form.id==='email-prompt-form'){await api('/api/email/prompt',{method:'PUT',body:JSON.stringify(payload)});closeModal();toast('Email prompt saved. It will guide the next preview.');return}if(form.id==='prompt-form'){await api('/api/search/prompt',{method:'PUT',body:JSON.stringify(payload)});closeModal();toast('Research prompt saved for ChatGPT web search');return}const path=form.id==='import-form'?'/api/jobs/import':`/api/jobs/${form.dataset.jobid}/contacts`;await api(path,{method:'POST',body:JSON.stringify(payload)});closeModal();await load();toast(form.id==='import-form'?'Job added to pipeline':'Contact saved')}catch(err){toast(err.message,true)}});
-$('close-dialog').onclick=closeModal;$('toggle-menu').onclick=()=> $('app-shell').classList.toggle('open');
+$('close-dialog').onclick=closeModal;
+$('form-dialog').addEventListener('close',function(){if(!$('form-dialog').open)stopAutomationProgress();});$('toggle-menu').onclick=()=> $('app-shell').classList.toggle('open');
 if($('edit-search-prompt')) $('edit-search-prompt').onclick=promptDialog;
 $('import-sheet').onclick=sheetDialog;
 load();

@@ -691,38 +691,70 @@ def mark_reply_action_done(outreach_id: str, data: ReplyActionInput, user: str =
         return {'ok': True}
 
 
-@app.get('/api/automation/progress')
-def automation_progress(job_ids: str = '', user: str = Depends(owner)):
-    """Contact-level progress and audit events; UI polls this endpoint."""
+@app.get('/api/imports/{batch_id}/progress')
+def import_batch_progress(batch_id: str, user: str = Depends(owner)):
+    """Read one persisted upload batch; never start or stop background processing."""
+    if not re.fullmatch(r'[0-9a-f]{32}', batch_id):
+        raise HTTPException(404, 'Upload batch not found')
     with session() as db:
-        selected_ids = [x for x in job_ids.split(',') if x][:250]
-        query = select(Job).where(Job.id.in_(selected_ids)) if selected_ids else select(Job).order_by(Job.created_at.desc()).limit(100)
-        jobs = db.execute(query).scalars().all()
-        if selected_ids:
-            positions = {value: index for index,value in enumerate(selected_ids)}
-            jobs.sort(key=lambda j: positions.get(j.id,999))
-        ids = [j.id for j in jobs]
+        raw = get_kv(db, 'import_batch:' + batch_id, '')
+        if not raw:
+            raise HTTPException(404, 'Upload batch not found')
+        batch = json.loads(raw)
+        ids = list(dict.fromkeys(batch.get('job_ids', [])))[:250]
+        scope = batch.get('contacts_by_job', {})
         if not ids:
-            return {'jobs': [], 'events': []}
-        rows = db.execute(select(Outreach).where(Outreach.job_id.in_(ids))).scalars().all()
-        contacts = db.execute(select(Contact).where(Contact.job_id.in_(ids))).scalars().all()
-        events = db.execute(select(Event).where(Event.job_id.in_(ids)).order_by(Event.created_at.desc()).limit(500)).scalars().all()
-        contact_map = {x.id: x for x in contacts}
-        by_job = {}
+            return {'batch_id': batch_id, 'created_at': batch['created_at'],
+                    'filename': batch['filename'], 'summary': batch['summary'],
+                    'jobs': [], 'events': [], 'status': 'nothing_queued'}
+        jobs = db.execute(select(Job).where(Job.id.in_(ids))).scalars().all()
+        jobs_by_id = {j.id: j for j in jobs}
+        allowed = list(dict.fromkeys(cid for jid in ids for cid in scope.get(jid, [])))
+        contacts = db.execute(select(Contact).where(Contact.id.in_(allowed))).scalars().all() if allowed else []
+        by_id = {c.id: c for c in contacts}
+        rows = db.execute(select(Outreach).where(Outreach.contact_id.in_(allowed))
+                          .order_by(Outreach.created_at.desc())).scalars().all() if allowed else []
+        by_contact = {}
         for row in rows:
-            contact = contact_map.get(row.contact_id)
-            by_job.setdefault(row.job_id, []).append({
-                'outreach_id': row.id, 'contact_id': row.contact_id,
-                'contact_name': contact.name if contact else 'Unknown contact',
-                'contact_email': row.to_email or (contact.email if contact else ''),
-                'status': row.status, 'due_at': row.due_at.isoformat() if row.due_at else None,
-                'error': row.error,
-            })
-        return {'jobs': [{'id': j.id, 'company': j.company, 'title': j.title,
-                          'contacts': by_job.get(j.id, [])} for j in jobs],
-                'events': [{'id': e.id, 'job_id': e.job_id, 'outreach_id': e.outreach_id,
-                            'action': e.action, 'details': json.loads(e.details or '{}'),
-                            'at': e.created_at.isoformat()} for e in events]}
+            by_contact.setdefault(row.contact_id, row)
+        outreach_ids = [row.id for row in by_contact.values()]
+        events = db.execute(select(Event).where(
+            Event.outreach_id.in_(outreach_ids),
+            Event.created_at >= datetime.fromisoformat(batch['created_at']))
+            .order_by(Event.created_at.desc()).limit(1500)).scalars().all() if outreach_ids else []
+        items = []
+        for jid in ids:
+            job = jobs_by_id.get(jid)
+            if not job:
+                continue
+            people = []
+            for cid in scope.get(jid, []):
+                contact = by_id.get(cid)
+                if not contact:
+                    continue
+                row = by_contact.get(cid)
+                people.append({
+                    'id': cid, 'name': contact.name, 'email': contact.email,
+                    'email_status': contact.email_status,
+                    'has_linkedin': bool(contact.linkedin_url),
+                    'outreach_id': row.id if row else '',
+                    'status': row.status if row else 'not_queued',
+                    'due_at': row.due_at.isoformat() if row and row.due_at else None,
+                    'sent_at': row.sent_at.isoformat() if row and row.sent_at else None,
+                    'draft_created': bool(row and row.gmail_draft_id),
+                    'error': row.error if row else '',
+                })
+            items.append({'id': job.id, 'company': job.company,
+                          'title': job.title, 'contacts': people})
+        return {
+            'batch_id': batch_id, 'created_at': batch['created_at'],
+            'filename': batch['filename'], 'summary': batch['summary'],
+            'jobs': items,
+            'events': [{'id': e.id, 'job_id': e.job_id, 'outreach_id': e.outreach_id,
+                        'action': e.action, 'details': json.loads(e.details or '{}'),
+                        'at': e.created_at.isoformat()} for e in events],
+            'status': 'tracking',
+        }
 
 
 @app.get('/api/jobs/{job_id}')
@@ -977,6 +1009,22 @@ def import_job(data: JobInput, user: str = Depends(owner)):
         log(db, 'job_imported', row.id, url=url)
         return {'id': row.id, 'duplicate': False}
 
+def save_import_batch(db, result, filename, started_at):
+    """Save the exact job/contact scope for this upload in persistent storage."""
+    batch_id = secrets.token_hex(16)
+    contact_scope = result.pop('batch_contacts', {})
+    summary = {key: result.get(key) for key in (
+        'created', 'duplicates', 'skipped', 'contacts_created',
+        'rows_read', 'possible_duplicates', 'errors')}
+    set_kv(db, 'import_batch:' + batch_id, json.dumps({
+        'created_at': started_at, 'filename': filename[:120],
+        'job_ids': result['job_ids'], 'contacts_by_job': contact_scope,
+        'summary': summary,
+    }))
+    result['batch_id'] = batch_id
+    return contact_scope
+
+
 class CsvImportInput(BaseModel):
     csv_text: str = Field(min_length=10, max_length=400000)
 
@@ -1006,9 +1054,11 @@ async def import_spreadsheet(file: UploadFile = File(...), user: str = Depends(o
     finally:
         await file.close()
     with session() as db:
+        started_at = now().isoformat()
         result = import_rows(db, rows)
+        scope = save_import_batch(db, result, filename, started_at)
         from .auto_pipeline import enqueue_import
-        result['automation'] = enqueue_import(db, result['job_ids'])
+        result['automation'] = enqueue_import(db, result['job_ids'], scope)
         log(db, 'spreadsheet_import_finished', **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result
@@ -1024,9 +1074,11 @@ def import_pasted_csv(data: CsvImportInput, user: str = Depends(owner)):
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     with session() as db:
+        started_at = now().isoformat()
         result = import_rows(db, rows)
+        scope = save_import_batch(db, result, 'Pasted CSV', started_at)
         from .auto_pipeline import enqueue_import
-        result['automation'] = enqueue_import(db, result['job_ids'])
+        result['automation'] = enqueue_import(db, result['job_ids'], scope)
         log(db, 'pasted_csv_import_finished', **{k: result[k] for k in (
             'created', 'duplicates', 'skipped', 'contacts_created', 'rows_read')})
         return result

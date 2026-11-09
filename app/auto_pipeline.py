@@ -19,7 +19,7 @@ KEY = 'atlas_auto_import_enabled'
 def enabled(db):
     return get_kv(db, KEY, '') == 'true'
 
-def enqueue_import(db, job_ids):
+def enqueue_import(db, job_ids, batch_contacts=None):
     """Queue one independent outreach per contact. Upload authorizes these sends."""
     if demo_mode():
         return {'queued': 0}
@@ -29,7 +29,10 @@ def enqueue_import(db, job_ids):
         job = db.get(Job, job_id)
         if not job or job.status == 'duplicate_review':
             continue
+        allowed = set((batch_contacts or {}).get(job_id, [])) if batch_contacts is not None else None
         contacts = db.execute(select(Contact).where(Contact.job_id == job_id).order_by(Contact.created_at, Contact.id)).scalars().all()
+        if allowed is not None:
+            contacts = [contact for contact in contacts if contact.id in allowed]
         for index, contact in enumerate(contacts, 1):
             if db.execute(select(Outreach.id).where(Outreach.job_id == job_id, Outreach.contact_id == contact.id)).first():
                 continue
