@@ -559,48 +559,60 @@ def update_email_holidays(data: HolidaysInput, user: str = Depends(owner)):
 
 @app.delete('/api/jobs/{job_id}')
 def delete_imported_job(job_id: str, user: str = Depends(owner)):
-    """Delete unsent jobs; archive sent jobs without losing Gmail reply tracking."""
+    """Delete an unsent job and its dependent rows; archive any sent history."""
     if demo_mode():
         raise HTTPException(409, 'Deletion disabled in demo mode')
     from sqlalchemy import delete
     from .db import KV
-    with session() as db:
-        job = db.get(Job, job_id, with_for_update=True)
-        if not job or job.is_demo:
-            raise HTTPException(404, 'Imported job not found')
-        rows = db.execute(select(Outreach).where(Outreach.job_id == job_id).with_for_update()).scalars().all()
-        sent = any(row.sent_at or row.sent_message_id or row.gmail_thread_id or row.status in
-                   ('sent', 'awaiting_reply', 'followup_scheduled', 'responded', 'finished') for row in rows)
-        if sent:
-            # Keep the job and all sent threads for reply tracking; hide from the jobs list.
-            job.status = 'archived'
-            log(db, 'job_archived_preserving_sent_history', job_id, outreach_count=len(rows))
-            return {'deleted': False, 'archived': True, 'job_id': job_id}
-        from .integrations import gmail_delete_draft
-        for row in rows:
-            if row.gmail_draft_id:
-                try:
-                    gmail_delete_draft(db, row.gmail_draft_id)
-                except Exception as exc:
-                    # A missing/already-deleted draft is fine; other errors must be surfaced.
-                    if '404' not in str(exc) and 'not found' not in str(exc).lower():
-                        raise HTTPException(502, 'Gmail draft cleanup failed: ' + str(exc)[:200])
-            db.delete(row)
-        db.flush()
-        contact_ids = db.execute(select(Contact.id).where(Contact.job_id == job_id)).scalars().all()
-        for (contact_id,) in contact_ids:
-            db.execute(delete(KV).where(KV.key == 'auto_rr:' + contact_id))
-        db.execute(delete(Contact).where(Contact.job_id == job_id))
-        db.flush()
-        log(db, 'imported_job_deleted', job_id, company=job.company, title=job.title,
-            contacts=len(contact_ids), unsent_outreach=len(rows))
-        db.delete(job)
-        try:
+    try:
+        with session() as db:
+            job = db.get(Job, job_id)
+            if job is None or job.is_demo:
+                raise HTTPException(404, 'Imported job not found')
+            rows = db.execute(select(Outreach).where(Outreach.job_id == job_id)).scalars().all()
+            sent = any(row.sent_at or row.sent_message_id or row.gmail_thread_id or row.status in
+                       ('sent', 'sending', 'awaiting_reply', 'followup_scheduled', 'responded', 'finished')
+                       for row in rows)
+            if sent:
+                job.status = 'archived'
+                log(db, 'job_archived_preserving_sent_history', job_id, outreach_count=len(rows))
+                db.flush()
+                return {'deleted': False, 'archived': True, 'job_id': job_id}
+
+            # Do not call the external Gmail API inside the database transaction:
+            # a deleted/expired Gmail draft must never block deleting an unsent job.
+            draft_ids = [row.gmail_draft_id for row in rows if row.gmail_draft_id]
+            contact_ids = db.execute(select(Contact.id).where(Contact.job_id == job_id)).scalars().all()
+            company, title = job.company, job.title
+            db.execute(delete(Outreach).where(Outreach.job_id == job_id))
+            db.execute(delete(Contact).where(Contact.job_id == job_id))
+            for contact_id in contact_ids:
+                db.execute(delete(KV).where(KV.key == 'auto_rr:' + contact_id))
+            db.execute(delete(Job).where(Job.id == job_id))
+            log(db, 'imported_job_deleted', job_id, company=company, title=title,
+                contacts=len(contact_ids), unsent_outreach=len(rows))
             db.flush()
-        except Exception as exc:
-            db.rollback()
-            raise HTTPException(409, 'Database could not delete this job; check dependent records: ' + type(exc).__name__)
-        return {'deleted': True, 'archived': False, 'job_id': job_id}
+
+        # Cleanup is best-effort AFTER the DB transaction has committed.
+        warnings = []
+        if draft_ids:
+            from .integrations import gmail_delete_draft
+            for draft_id in draft_ids:
+                try:
+                    with session() as cleanup_db:
+                        gmail_delete_draft(cleanup_db, draft_id)
+                except Exception as exc:
+                    if '404' not in str(exc) and 'not found' not in str(exc).lower():
+                        warnings.append('Could not delete a Gmail draft; remove it manually in Gmail.')
+        return {'deleted': True, 'archived': False, 'job_id': job_id, 'warnings': warnings}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import logging
+        logging.exception('Atlas job deletion failed for %s', job_id)
+        # Show a safe diagnostic rather than an opaque 500; no credentials or SQL data.
+        raise HTTPException(409, 'Job deletion failed (' + type(exc).__name__ +
+                            '). Check Vercel runtime logs for Atlas job deletion failed.')
 
 
 @app.get('/api/outreach/dashboard')
