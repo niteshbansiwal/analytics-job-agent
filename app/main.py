@@ -426,6 +426,18 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             detail = (f'Gmail API returned HTTP {exc.response.status_code}'
                       if isinstance(exc, httpx.HTTPStatusError)
                       else type(exc).__name__)
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 403:
+                try:
+                    provider = exc.response.json().get('error', {})
+                    reason = next((e.get('reason', '') for e in provider.get('errors', []) if e.get('reason')), '')
+                except (ValueError, TypeError, AttributeError):
+                    reason = ''
+                if reason in ('insufficientPermissions', 'ACCESS_TOKEN_SCOPE_INSUFFICIENT'):
+                    detail += ': Gmail draft permission is missing. Reconnect Gmail in Configuration and approve the requested scopes'
+                elif reason in ('accessNotConfigured', 'SERVICE_DISABLED'):
+                    detail += ': Gmail API is disabled for the Google Cloud project; enable it and reconnect Gmail'
+                else:
+                    detail += ': Gmail denied draft access. Reconnect Gmail in Configuration; if it persists, check Gmail API access in Google Cloud'
             raise HTTPException(502, f'Gmail draft creation/verification failed: {detail}. No email sent.')
         if not row:
             row = Outreach(job_id=job.id)
