@@ -3,9 +3,10 @@
   "framework": "fastapi",
   "schedules": {
     "atlas-automation": {
-      "schedule": "*/15 * * * *",
+      "schedule": "5,20,35,50 * * * *",
       "path": "/api/cron/probe",
-      "requestMethod": "GET"
+      "requestMethod": "GET",
+      "timezone": "Asia/Kolkata"
     }
   }
 }
