@@ -25,7 +25,7 @@ def test_gemini_preview_selects_only_approved_career_fact_ids(monkeypatch):
     monkeypatch.setattr(gemini, 'gemini_text', fake)
     result = gemini.build_email_preview('Visa', 'Analytics Manager',
         'SQL Tableau dashboards for payment clients', 'Jane Recruiter')
-    assert result['mode'] == 'gemini'
+    assert result['mode'] == 'ai_email'
     assert result['selected_fact_ids'] == ['dashboards', 'amex_sme', 'stakeholders']
     assert 'At American Express' in result['body']
     assert 'Hi Jane,' in result['body']
@@ -50,37 +50,18 @@ def test_gemini_invalid_response_falls_back_without_inventing_facts(monkeypatch)
 
 
 
-def test_primary_timeout_uses_one_faster_model_and_no_rule_based_fallback(monkeypatch):
+def test_timeout_uses_facts_only_draft_without_repeat_api_call(monkeypatch):
     calls = []
     def fake(prompt, *, model=None, **kwargs):
         calls.append(model or 'primary')
-        if model is None:
-            raise gemini.GeminiError('Gemini request timed out after 12 seconds',
-                                     retryable=True)
-        assert model == gemini.FAST_FALLBACK_MODEL
-        return json.dumps({'fact_ids': ['dashboards', 'amex_sme']})
+        raise gemini.GeminiError('Email model request timed out after 15 seconds',
+                                 retryable=True)
     monkeypatch.setattr(gemini, 'gemini_text', fake)
     result = gemini.build_email_preview('Visa', 'Decision Analytics Manager',
                                         'SQL Tableau dashboards')
-    assert calls == ['primary', gemini.FAST_FALLBACK_MODEL]
-    assert result['mode'] == 'gemini_backup'
-    assert result['model'] == gemini.FAST_FALLBACK_MODEL
-    assert 'faster Gemini model' in result['warning']
-    assert result['email_sent'] is False
-
-
-def test_two_transient_failures_use_clear_facts_only_fallback(monkeypatch):
-    calls = []
-    def fail(prompt, *, model=None, **kwargs):
-        calls.append(model or 'primary')
-        raise gemini.GeminiError('Gemini request timed out after 12 seconds',
-                                 retryable=True)
-    monkeypatch.setattr(gemini, 'gemini_text', fail)
-    result = gemini.build_email_preview('Visa', 'Decision Analytics Manager',
-                                        'SQL Tableau dashboards')
-    assert calls == ['primary', gemini.FAST_FALLBACK_MODEL]
+    assert calls == ['primary']
     assert result['mode'] == 'facts_only_fallback'
-    assert 'Both Gemini attempts failed' in result['warning']
+    assert 'timed out' in result['warning']
     assert result['email_sent'] is False
 
 
@@ -128,20 +109,19 @@ def test_gemini_api_response_and_no_key_leak(monkeypatch):
         def __exit__(self, *args):
             pass
         def post(self, url, *, headers, json):
-            assert 'gemini-3.8-flash:generateContent' in url
+            assert 'gemini-3.5-flash-lite:generateContent' in url
             assert headers['x-goog-api-key'] == 'fake-key'
             assert 'fake-key' not in str(json)
-            # Regression: Gemini 3.8 Flash rejects MINIMAL with HTTP 400.
-            assert json['generationConfig']['thinkingConfig']['thinkingLevel'] == 'LOW'
+            assert json['generationConfig']['thinkingConfig']['thinkingLevel'] == 'MINIMAL'
             return Response()
     monkeypatch.setattr(gemini, 'env',
         lambda name, default='': {'GEMINI_API_KEY':'fake-key',
-                                 'GEMINI_MODEL':'gemini-3.8-flash'}.get(name,default))
+                                 'GEMINI_MODEL':'gemini-3.5-flash-lite'}.get(name,default))
     monkeypatch.setattr(gemini.httpx, 'Client', Client)
     assert gemini.test_gemini_connection()['connected']
 
 
-def test_gemini_38_and_35_both_use_supported_low_thinking(monkeypatch):
+def test_email_model_uses_minimal_thinking_and_legacy_uses_low(monkeypatch):
     calls = []
     class Response:
         status_code = 200
@@ -163,13 +143,14 @@ def test_gemini_38_and_35_both_use_supported_low_thinking(monkeypatch):
             return Response()
     monkeypatch.setattr(gemini, 'env',
         lambda name, default='': {'GEMINI_API_KEY': 'fake-key',
-                                 'GEMINI_MODEL': 'gemini-3.8-flash'}.get(name, default))
+                                 'GEMINI_MODEL': 'gemini-3.5-flash-lite'}.get(name, default))
     monkeypatch.setattr(gemini.httpx, 'Client', Client)
-    for model in ('gemini-3.8-flash', 'gemini-3.5-flash'):
+    for model in ('gemini-3.5-flash-lite', 'gemini-3.8-flash'):
         result = gemini.gemini_text('Select facts', json_output=True, model=model)
         assert gemini._validated_ids(result) == ['dashboards', 'amex_sme']
     assert len(calls) == 2
-    for (url, payload), model in zip(calls, ('gemini-3.8-flash', 'gemini-3.5-flash')):
+    for (url, payload), model in zip(calls, ('gemini-3.5-flash-lite', 'gemini-3.8-flash')):
         assert model + ':generateContent' in url
-        assert payload['generationConfig']['thinkingConfig'] == {'thinkingLevel': 'LOW'}
+        assert payload['generationConfig']['thinkingConfig'] == {
+            'thinkingLevel': 'MINIMAL' if model == gemini.EMAIL_MODEL else 'LOW'}
         assert payload['generationConfig']['responseMimeType'] == 'application/json'
