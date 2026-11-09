@@ -125,7 +125,10 @@ async function handleSheetSubmit(form){
    result=await api('/api/jobs/import-csv',{method:'POST',body:JSON.stringify({csv_text:form.querySelector('textarea').value})});
   }
   await load();
-  sheetResult(result);
+  if(result.created){
+   await showAutomationProgress();
+   api('/api/automation/run-now',{method:'POST'}).then(()=>refreshAutomationProgress()).catch(e=>toast('Automation worker: '+e.message,true));
+  }else sheetResult(result);
   toast(result.created+' jobs imported; '+result.duplicates+' duplicates skipped');
  }catch(err){
   const message=escapeHtml(err.message||'Unable to import this file.');
