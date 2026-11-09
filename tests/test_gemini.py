@@ -241,3 +241,20 @@ def test_resume_numbers_and_url_digits():
     assert gemini._draft_numbers('Saved $450K across 10,000+ queries') <= gemini._approved_numbers()
     assert not gemini._draft_numbers('https://linkedin.com/jobs/view/987654321/ user123@example.com')
     assert '123456789' in gemini._draft_numbers('Saved 123456789 dollars')
+
+
+def test_recipient_subject_and_job_link(monkeypatch):
+    import json
+    monkeypatch.setattr(gemini, 'gemini_text', lambda *args, **kwargs: json.dumps({
+        'subject': 'Hi [FIRST_NAME], about Sony Analytics Manager',
+        'body': 'Hi [FIRST_NAME],\\n\\nI am writing about the Sony Analytics Manager opening (link here). ' +
+                'At Plivo, I improved SMS margins by 15% through pricing. ' +
+                'I would welcome a conversation about how this applies to your analytics priorities.\\n\\nNitesh Bansiwal',
+        'fact_ids': ['plivo_margin', 'dashboards']
+    }))
+    result = gemini.build_email_preview('Sony', 'Analytics Manager',
+        'Seeking analytics manager with SQL and Python skills to manage dashboards and reporting. ' * 2,
+        'Neha Ghai', job_post_url='https://www.linkedin.com/jobs/view/12345')
+    assert result['subject'].startswith('Neha,')
+    assert '[FIRST_NAME]' not in result['body']
+    assert 'https://www.linkedin.com/jobs/view/12345' in result['body']

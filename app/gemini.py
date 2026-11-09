@@ -298,12 +298,17 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
         first_name = 'Hiring Team'
     if first_name != 'Hiring Team' and not re.fullmatch(r"[\w.'-]{2,40}", first_name):
         first_name = 'Hiring Team'
-    body = body.replace('[FIRST_NAME]', first_name).replace('{{FIRST_NAME}}', first_name)
+    for token in ('[FIRST_NAME]', '{{FIRST_NAME}}', '{Recipient First Name}'):
+        subject = subject.replace(token, first_name)
+        body = body.replace(token, first_name)
+    subject = re.sub(r'(?i)^\\s*(?:hi|hello|dear)\\s+', '', subject).strip()
+    if '[FIRST_NAME]' in subject or '[FIRST_NAME]' in body:
+        raise GeminiError('Unresolved recipient name placeholder')
     if not re.match(r'(?i)^\s*(hi|hello|dear)\b', body):
         body = f'Hi {first_name},\n\n' + body
     # Preserve all model-authored links. Ensure the exact original posting URL
     # appears once, even when Gemini overlooks the configured requirement.
-    if source_url and source_url not in body:
+    if source_url and source_url not in body and '(link here)' not in body.lower():
         signature = re.search(
             r'(?im)\n(?:regards|best regards|thanks|thank you|sincerely|warm regards),?\s*\nNitesh Bansiwal\s*$',
             body)
@@ -311,6 +316,11 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
             body = body[:signature.start()] + '\n\nJob posting: ' + source_url + body[signature.start():]
         else:
             body += '\n\nJob posting: ' + source_url
+    if source_url:
+        # The exact URL is retained in the plain-text MIME alternative; the
+        # HTML alternative replaces it with a short clickable anchor.
+        if source_url not in body:
+            body += '\\n\\nJob posting: ' + source_url
     if 'Nitesh Bansiwal' not in body:
         body += '\n\nRegards,\nNitesh Bansiwal'
     return {

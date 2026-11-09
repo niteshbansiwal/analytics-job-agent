@@ -1,12 +1,14 @@
 from __future__ import annotations
 import base64
 import hashlib
+import html
+import re
 import os
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from email.utils import parseaddr
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from cryptography.fernet import Fernet
 import httpx
 from sqlalchemy.orm import Session
@@ -99,6 +101,21 @@ def build_mime(to: str, sender: str, subject: str, body: str,
         msg['In-Reply-To'] = in_reply_to
         msg['References'] = in_reply_to
     msg.set_content(body)
+    # Render links in a multipart/alternative email. Escape all model-authored
+    # text; only Atlas builds the trusted anchor element.
+    urls = re.findall(r'https?://[^\\s<>]+', body)
+    job_url = next((url.rstrip(').,;') for url in urls
+                    if 'linkedin.com/jobs/' in url or '/jobs/view/' in url), '')
+    if not job_url and 'Job posting:' in body:
+        job_url = next((url.rstrip(').,;') for url in urls), '')
+    if job_url:
+        anchor = '<a href="' + html.escape(job_url, quote=True) + '">link here</a>'
+        visible = body.replace('Job posting: ' + job_url, '')
+        visible = visible.replace(job_url, 'link here')
+        visible = re.sub(r'(?i)\\blink here\\b', '__ATLAS_JOB_LINK__', visible)
+        rendered = html.escape(visible).replace('__ATLAS_JOB_LINK__', anchor)
+        msg.add_alternative('<html><body><div style="white-space:pre-wrap;font-family:Arial,sans-serif">' +
+                            rendered + '</div></body></html>', subtype='html')
     if pdf:
         msg.add_attachment(pdf, maintype='application', subtype='pdf',
                            filename=filename or 'Tailored_Resume.pdf')
