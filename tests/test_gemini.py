@@ -60,6 +60,34 @@ def test_risk_role_keeps_verified_fraud_achievement_when_model_misses_it(monkeyp
     assert 'Hi Ishika,' in result['body']
 
 
+def test_custom_email_prompt_uses_jd_and_model_prose_without_new_claims(monkeypatch):
+    prompts = []
+    def fake(prompt, **kwargs):
+        prompts.append(prompt)
+        return json.dumps({'fact_ids':['dashboards','stakeholders'],
+            'opening':'I saw the role at Visa and was interested in its dashboard reporting work.',
+            'closing':'I would welcome a conversation about your analytics team.'})
+    monkeypatch.setattr(gemini, 'gemini_text', fake)
+    result = gemini.build_email_preview('Visa','Analytics Manager',
+        'Own dashboard reporting and SQL analysis for payment clients.',
+        'Jane Recruiter', 'Keep the email direct and specific to the JD.')
+    assert 'Keep the email direct' in prompts[0]
+    assert 'dashboard reporting and SQL analysis' in prompts[0]
+    assert 'Jane Recruiter' not in prompts[0]
+    assert 'I saw the role at Visa' in result['body']
+    assert 'At Plivo, I built dashboards' in result['body']
+    assert result['email_sent'] is False
+
+
+def test_model_claim_in_opening_is_discarded(monkeypatch):
+    monkeypatch.setattr(gemini, 'gemini_text', lambda *args, **kwargs:
+        '{"fact_ids":["dashboards","stakeholders"],'
+        '"opening":"I managed 300 analysts at Visa for 15 years.",'
+        '"closing":"I would welcome a brief conversation about the role."}')
+    result = gemini.build_email_preview('Visa','Analytics Manager','SQL dashboards')
+    assert '300 analysts' not in result['body']
+
+
 
 def test_timeout_uses_facts_only_draft_without_repeat_api_call(monkeypatch):
     calls = []
