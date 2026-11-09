@@ -20,7 +20,7 @@ def enabled(db):
     return get_kv(db, KEY, '') == 'true'
 
 def enqueue_import(db, job_ids):
-    """The upload is explicit authorization; never requeue existing outreach."""
+    """Queue one independent outreach per contact. Upload authorizes these sends."""
     if demo_mode():
         return {'queued': 0}
     set_kv(db, KEY, 'true')
@@ -29,19 +29,23 @@ def enqueue_import(db, job_ids):
         job = db.get(Job, job_id)
         if not job or job.status == 'duplicate_review':
             continue
-        if db.execute(select(Outreach.id).where(Outreach.job_id == job_id)).first():
-            continue
-        row = Outreach(job_id=job_id, status='pending_contact')
-        db.add(row)
-        db.flush()
-        log(db, 'auto_outreach_queued', job_id, row.id)
-        count += 1
+        contacts = db.execute(select(Contact).where(Contact.job_id == job_id).order_by(Contact.created_at, Contact.id)).scalars().all()
+        for index, contact in enumerate(contacts, 1):
+            if db.execute(select(Outreach.id).where(Outreach.job_id == job_id, Outreach.contact_id == contact.id)).first():
+                continue
+            row = Outreach(job_id=job_id, contact_id=contact.id, status='pending_contact')
+            db.add(row)
+            db.flush()
+            log(db, 'auto_contact_queued', job_id, row.id, contact_id=contact.id, contact_number=index, contact_name=contact.name)
+            count += 1
+        if not contacts:
+            log(db, 'auto_job_no_contacts', job_id, detail='No contact supplied in spreadsheet')
     return {'queued': count}
 
 def _failure(db, row, message):
     row.status = 'needs_attention'
     row.error = str(message)[:350]
-    log(db, 'auto_outreach_failed', row.job_id, row.id, error=row.error)
+    log(db, 'auto_outreach_failed', row.job_id, row.id, contact_id=row.contact_id, error=row.error)
     try:
         job = db.get(Job, row.job_id)
         send_telegram('Atlas attention required: ' + job.company + ' — ' + job.title + '\n' + row.error)
@@ -67,13 +71,16 @@ def process_pending(db, limit=4):
             if not env('ROCKETREACH_API_KEY'):
                 _failure(db, row, 'No contact email and RocketReach is not configured')
                 continue
-            candidate = next((c for c in contacts if c.linkedin_url.startswith('https://www.linkedin.com/in/') or c.linkedin_url.startswith('https://linkedin.com/in/')), None)
+            candidate = db.get(Contact, row.contact_id)
+            if candidate and not (candidate.linkedin_url.startswith('https://www.linkedin.com/in/') or candidate.linkedin_url.startswith('https://linkedin.com/in/')):
+                candidate = None
             if not candidate:
                 _failure(db, row, 'No usable LinkedIn person profile for enrichment')
                 continue
             state_key = 'auto_rr:' + candidate.id
             state = json.loads(get_kv(db, state_key, '{}'))
             try:
+                log(db, 'auto_contact_email_search', job.id, row.id, contact_id=candidate.id, provider='RocketReach')
                 if not state:
                     result = rocketreach_lookup(candidate.linkedin_url)
                 elif state.get('provider_id') and state.get('status') in ('pending','awaiting_email'):
@@ -87,6 +94,7 @@ def process_pending(db, limit=4):
                     candidate.email = result['email']
                     candidate.email_status = result.get('email_status','rocketreach_unverified')
                     contact = candidate
+                    log(db, 'auto_contact_email_found', job.id, row.id, contact_id=candidate.id, source='RocketReach')
                 elif result.get('status') in ('pending','awaiting_email'):
                     log(db, 'auto_contact_enrichment_pending', job.id, row.id, contact_id=candidate.id)
                     continue
@@ -100,11 +108,13 @@ def process_pending(db, limit=4):
             _failure(db, row, 'Gmail is not connected')
             continue
         try:
+            log(db, 'auto_draft_building', job.id, row.id, contact_id=contact.id)
             item, pdf = get_resume(db, 'analytics')
             prompt = get_kv(db, 'email_generation_prompt', '')
             preview = build_email_preview(job.company, job.title, job.jd or '', contact.name, prompt)
             draft = gmail_create_draft(db, contact.email, preview['subject'], preview['body'], pdf, item['filename'])
             draft_id = draft['id']
+            log(db, 'auto_gmail_draft_created', job.id, row.id, contact_id=contact.id, draft_id=draft_id)
             verified = inspect_gmail_draft(gmail_get_draft(db, draft_id))
             if verified['to'].lower() != contact.email.lower() or verified['attachment_count'] != 1 or not verified['body'].strip():
                 raise ValueError('Gmail draft verification mismatch')
@@ -130,7 +140,7 @@ def process_pending(db, limit=4):
             row.error = ''
             job.status = 'approved'
             scheduled += 1
-            log(db, 'auto_email_drafted_and_scheduled', job.id, row.id, draft_id=draft_id, due_at=row.due_at)
+            log(db, 'auto_email_drafted_and_scheduled', job.id, row.id, contact_id=contact.id, draft_id=draft_id, due_at=row.due_at)
         except Exception as exc:
             _failure(db, row, 'Draft/schedule error: '+type(exc).__name__+': '+str(exc)[:150])
     return {'processed': len(rows), 'scheduled': scheduled}
