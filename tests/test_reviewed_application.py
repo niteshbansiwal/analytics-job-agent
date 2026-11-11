@@ -89,7 +89,7 @@ def test_reviewed_draft_requires_confirmation_and_verifies_pdf_without_sending(m
     chosen = {str(i): list(range(count)) for i, count in enumerate([7, 7, 3, 1])}
     payload = {
         'contact_id': contact_id, 'recipient_email': 'recruiter@example.com',
-        'subject': 'Decision Analytics Manager', 'body': 'Hello, I would like to discuss the analytics manager opening.',
+        'subject': 'Decision Analytics Manager', 'body': 'Hi Test,\n\nI would like to discuss the analytics manager opening. https://example.com/jobs/test-role',
         'resume_id': 'analytics', 'resume_sha256': digest(original_pdf), 'reviewed': True,
     }
     try:

@@ -12,6 +12,7 @@ const context=vm.createContext({console,URL,URLSearchParams,CSS:{escape:x=>x},wi
  return {ok:true,json:async()=>result};
 }});
 vm.runInContext(fs.readFileSync('public/app.js','utf8'),context);
+vm.runInContext(fs.readFileSync('public/email-controls.js','utf8'),context);
 vm.runInContext(fs.readFileSync('public/workspace.js','utf8').replace(/load\(\);\s*$/,''),context);
 (async()=>{
  await vm.runInContext('load()',context);
@@ -27,5 +28,12 @@ vm.runInContext(fs.readFileSync('public/workspace.js','utf8').replace(/load\(\);
  assert.equal(requests.length,before+1); // unchanged revision must not fetch full data
  assert(requests.every(([,method])=>method==='GET'));
  assert(fs.readFileSync('public/index.html','utf8').includes('data-page="logs"'));
+ assert(fs.readFileSync('public/index.html','utf8').includes('/assets/email-controls.js?v=controlled-1'));
+ vm.runInContext(`state.page='emails';state.emailControls={controls:{subjects:['{{first_name}}, analytics at {{company}}'],subject_mode:'rotate',subject_index:0,body_template:'Hi {{first_name}},',max_repairs:2,resume_id:'analytics',allowed_fact_ids:['dashboards']},facts:{dashboards:'Verified dashboards achievement'},resumes:[]};render();`,context);
+ assert(element('main-view').innerHTML.includes('Email studio'));
+ assert(element('main-view').innerHTML.includes('Body template'));
+ const formatted=vm.runInContext("draftHtml('Analytics role','Hi Priya, https://careers.example.com/jobs/123?x=1&y=2')",context);
+ assert(formatted.includes('href="https://careers.example.com/jobs/123?x=1&amp;y=2"'));
+
  console.log('Workspace navigation, log history and refresh contracts passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

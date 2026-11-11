@@ -257,6 +257,7 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
         db.commit()
         if result.rowcount != 1:
             continue
+        send_attempted = False
         try:
             if not row.gmail_draft_id:
                 raise RuntimeError('No Gmail draft linked to the scheduled message')
@@ -299,8 +300,26 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
             latest = inspect_gmail_draft(live_draft)
             if not latest['subject'].strip() or not latest['body'].strip():
                 raise RuntimeError('Draft subject or body missing; refused to send')
-            # User-edited body, subject, recipient(s), and attachments take precedence.
-            response = gmail_send_existing_draft(db, row.gmail_draft_id)
+            from .email_policy import validate_final, assert_no_variables
+            job = db.get(Job, row.job_id)
+            contact = db.get(Contact, row.contact_id)
+            if not job or not contact:
+                raise ValueError('Job or hiring contact missing; refused to send')
+            assert_no_variables(latest['subject'], latest['body']+'\n'+latest.get('html_body',''))
+            validate_final(latest['subject'], latest['body'], contact.name, job.post_url,
+                           followup=desired_state == 'followup_scheduled')
+            if latest['to'].strip().casefold() != row.to_email.strip().casefold():
+                raise ValueError('Gmail recipient changed; review in Atlas before sending')
+            if desired_state != 'followup_scheduled':
+                import hashlib
+                if (job.post_url not in latest.get('html_links', [])
+                        or latest['attachment_count'] != 1
+                        or not row.resume_b64
+                        or latest['attachment_sha256'] != [hashlib.sha256(base64.b64decode(row.resume_b64)).hexdigest()]):
+                    raise ValueError('Job hyperlink or selected resume failed verification; refused to send')
+            # Validated user edits are sent from the latest Gmail draft.
+            send_attempted = True
+            response = gmail_send_existing_draft(db, row.gmail_draft_id, validated=latest)
             row.to_email = latest['to']
             row.subject = latest['subject']
             row.body = latest['body']
@@ -332,7 +351,7 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
                 pass
         except Exception as exc:
             # Ambiguous provider failures are held for manual review, NEVER automatically retried.
-            row.status = 'sending_review'
+            row.status = 'sending_review' if send_attempted else 'needs_attention'
             row.error = f'{type(exc).__name__}: {exc}'[:450]
             log(db, 'send_needs_review', row.job_id, row.id, error=row.error)
             try:

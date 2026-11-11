@@ -149,7 +149,7 @@ def timeline(db, job_id, page=1, size=50):
         cid = data.get('contact_id') or links.get(event.outreach_id)
         # Explicit allowlist keeps provider responses, tokens and email bodies out of log UI.
         safe = {key: data[key] for key in ('filename', 'batch_id', 'source', 'status', 'error', 'detail',
-                'attempt', 'due_at', 'reply_class', 'received_at', 'detected_at', 'model', 'prompt_fingerprint') if key in data}
+                'attempt', 'due_at', 'reply_class', 'received_at', 'detected_at', 'model', 'prompt_fingerprint', 'repair_attempts', 'validation_status', 'subject_index', 'resume_id', 'resume_sha256') if key in data}
         items.append({'id': event.id, 'action': event.action, 'at': stamp(event.created_at),
             'occurred_at': data.get('received_at') or stamp(event.created_at),
             'contact_id': cid, 'contact_name': contacts.get(cid, ''), 'details': safe})

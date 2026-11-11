@@ -277,7 +277,7 @@ def test_mime_has_clickable_job_link():
     from email.policy import default
     import base64
     raw = build_mime('neha@example.com', 'sender@example.com', 'Role',
-                     'Hi Neha,\\n\\nI am applying (link here).\\n\\nJob posting: https://www.linkedin.com/jobs/view/12345')
+                     'Hi Neha,\n\nI am applying.\n\nJob posting: https://www.linkedin.com/jobs/view/12345')
     msg = BytesParser(policy=default).parsebytes(base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4)))
-    assert 'link here</a>' in msg.get_body(preferencelist=('html',)).get_content()
+    assert 'View job posting</a>' in msg.get_body(preferencelist=('html',)).get_content()
     assert 'https://www.linkedin.com/jobs/view/12345' in msg.get_body(preferencelist=('plain',)).get_content()

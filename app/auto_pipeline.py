@@ -242,14 +242,22 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
             continue
         try:
             log(db, 'auto_draft_building', job.id, row.id, contact_id=contact.id)
-            item, pdf = get_resume(db, 'analytics')
+            from .email_policy import load_settings
+            controls = load_settings(db)
+            item, pdf = get_resume(db, controls['resume_id'])
             prompt = get_kv(db, 'email_generation_prompt', '')
-            preview = build_email_preview(job.company, job.title, job.jd or '', contact.name, prompt, job.post_url)
+            preview = build_email_preview(job.company, job.title, job.jd or '', contact.name, prompt, job.post_url, controls=controls)
             draft = gmail_create_draft(db, contact.email, preview['subject'], preview['body'], pdf, item['filename'])
             draft_id = draft['id']
-            log(db, 'auto_gmail_draft_created', job.id, row.id, contact_id=contact.id, draft_id=draft_id)
+            log(db, 'auto_gmail_draft_created', job.id, row.id, contact_id=contact.id, draft_id=draft_id,
+                repair_attempts=preview['repair_attempts'], validation_status='passed',
+                subject_index=preview['subject_index'], resume_id=item['id'], prompt_fingerprint=preview['prompt_fingerprint'])
             verified = inspect_gmail_draft(gmail_get_draft(db, draft_id))
-            if verified['to'].lower() != contact.email.lower() or verified['attachment_count'] != 1 or not verified['body'].strip():
+            if (verified['to'].lower() != contact.email.lower() or verified['attachment_count'] != 1
+                    or verified['subject'] != preview['subject']
+                    or verified['body'].strip().replace('\r\n','\n') != preview['body'].strip()
+                    or job.post_url not in verified.get('html_links', [])
+                    or verified['attachment_sha256'] != [item['sha256']]):
                 raise ValueError('Gmail draft verification mismatch')
             row.contact_id = contact.id
             row.to_email = contact.email

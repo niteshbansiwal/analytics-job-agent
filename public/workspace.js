@@ -19,7 +19,7 @@ async function load({quiet=false}={}){
   try{
     const params=new URLSearchParams({section:page,page:String(state.jobPage),search:state.search,status:state.filter});
     const extra=page==='outbox'?api('/api/workspace/outreach?'+new URLSearchParams({page:String(state.dashboardPage),search:state.outboxSearch,status:state.dashboardFilter})):
-      page==='logs'?api('/api/workspace/logs?'+new URLSearchParams({page:String(state.logPage),search:state.logsSearch,batch:state.logsBatch,start:state.logsStart,end:state.logsEnd,event_type:state.logsEvent,job_id:state.logsJobId})):Promise.resolve(null);
+      page==='emails'?api('/api/email/templates'):page==='logs'?api('/api/workspace/logs?'+new URLSearchParams({page:String(state.logPage),search:state.logsSearch,batch:state.logsBatch,start:state.logsStart,end:state.logsEnd,event_type:state.logsEvent,job_id:state.logsJobId})):Promise.resolve(null);
     const [data,list]=await Promise.all([api('/api/overview?'+params),extra]);
     if(token!==state.viewToken||page!==state.page)return;
     state.data=data;
@@ -27,6 +27,7 @@ async function load({quiet=false}={}){
     if(page==='outbox')await Promise.all(list.items.filter(r=>state.expanded.has(r.id)).map(async r=>{state.detailCache[r.id]=await api('/api/workspace/outreach/'+r.id)}));
     if(page==='logs')await Promise.all(list.items.filter(r=>state.logExpanded.has(r.id)).map(async r=>{state.timelines[r.id]=await api('/api/workspace/jobs/'+r.id+'/timeline')}));
     if(page==='outbox'){state.dashboard=list;state.dashboardPage=list.page;data.outreach=list.items;}
+    if(page==='emails')state.emailControls=list;
     if(page==='logs'){state.logs=list;state.logPage=list.page;}
     if(page==='jobs'||page==='overview'){
       state.jobPage=data.jobs_page.page;

@@ -93,6 +93,8 @@ def gmail(db: Session, method: str, path: str, *, json=None, params=None):
 
 def build_mime(to: str, sender: str, subject: str, body: str,
                pdf: bytes = b'', filename: str = '', in_reply_to: str = '') -> str:
+    from .email_policy import assert_no_variables
+    assert_no_variables(subject, body)
     msg = EmailMessage()
     msg['To'] = to
     msg['From'] = sender
@@ -101,21 +103,8 @@ def build_mime(to: str, sender: str, subject: str, body: str,
         msg['In-Reply-To'] = in_reply_to
         msg['References'] = in_reply_to
     msg.set_content(body)
-    # Render links in a multipart/alternative email. Escape all model-authored
-    # text; only Atlas builds the trusted anchor element.
-    urls = re.findall(r'https?://[^\\s<>]+', body)
-    job_url = next((url.rstrip(').,;') for url in urls
-                    if 'linkedin.com/jobs/' in url or '/jobs/view/' in url), '')
-    if not job_url and 'Job posting:' in body:
-        job_url = next((url.rstrip(').,;') for url in urls), '')
-    if job_url:
-        anchor = '<a href="' + html.escape(job_url, quote=True) + '">link here</a>'
-        visible = body.replace('Job posting: ' + job_url, '')
-        visible = visible.replace(job_url, 'link here')
-        visible = re.sub(r'(?i)\\blink here\\b', '__ATLAS_JOB_LINK__', visible)
-        rendered = html.escape(visible).replace('__ATLAS_JOB_LINK__', anchor)
-        msg.add_alternative('<html><body><div style="white-space:pre-wrap;font-family:Arial,sans-serif">' +
-                            rendered + '</div></body></html>', subtype='html')
+    from .email_policy import html_body
+    msg.add_alternative(html_body(body), subtype='html')
     if pdf:
         msg.add_attachment(pdf, maintype='application', subtype='pdf',
                            filename=filename or 'Tailored_Resume.pdf')
@@ -152,9 +141,21 @@ def inspect_gmail_draft(draft: dict) -> dict:
     if not recipients or not all('@' in address and '.' in address.split('@')[-1] for address in recipients):
         raise RuntimeError('Draft lacks a valid To recipient')
     body = msg.get_body(preferencelist=('plain',))
+    html_part = msg.get_body(preferencelist=('html',))
+    from html.parser import HTMLParser
+    class Links(HTMLParser):
+        def __init__(self):
+            super().__init__(); self.links = []
+        def handle_starttag(self, tag, attrs):
+            if tag == 'a':
+                self.links.extend(v for k,v in attrs if k == 'href' and v)
+    links = Links()
+    if html_part: links.feed(html_part.get_content())
     return {
         'to': ', '.join(recipients), 'subject': str(msg.get('Subject', '')),
         'body': body.get_content() if body else '',
+        'html_links': links.links,
+        'html_body': html_part.get_content() if html_part else '',
         'attachment_count': sum(1 for p in msg.walk() if p.get_content_disposition() == 'attachment'),
         'attachment_filenames': [p.get_filename() or '' for p in msg.walk()
                                  if p.get_content_disposition() == 'attachment'],
@@ -163,8 +164,13 @@ def inspect_gmail_draft(draft: dict) -> dict:
         'thread_id': draft.get('message', {}).get('threadId', ''),
     }
 
-def gmail_send_existing_draft(db: Session, draft_id: str) -> dict:
-    # No MIME override: Gmail sends the *latest manually edited* contents.
+def gmail_send_existing_draft(db: Session, draft_id: str, *, validated: dict | None = None) -> dict:
+    # Re-read at the final provider boundary, including manually edited drafts.
+    from .email_policy import assert_no_variables
+    checked = inspect_gmail_draft(gmail_get_draft(db, draft_id))
+    assert_no_variables(checked['subject'], checked['body']+'\n'+checked.get('html_body',''))
+    if validated and any(checked.get(k) != validated.get(k) for k in ('to','subject','body','html_links','html_body','attachment_sha256')):
+        raise RuntimeError('Gmail draft changed after validation; review before sending')
     return gmail(db, 'POST', 'drafts/send', json={'id': draft_id})
 
 def gmail_delete_draft(db: Session, draft_id: str):

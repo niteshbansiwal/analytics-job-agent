@@ -80,7 +80,7 @@ def test_wrong_attachment_is_rejected_before_success(monkeypatch):
     with session() as db:
         save_resume(db,'data_science',original)
         db.add(Job(id=job_id,company='Test',title='Data Science Manager',source='test',post_url='https://example.com/job'))
-        db.add(Contact(id=contact_id,job_id=job_id,name='Recruiter',email='recruiter@example.com'))
+        db.add(Contact(id=contact_id,job_id=job_id,name='Priya Recruiter',email='recruiter@example.com'))
         db.add(Integration(provider='gmail',owner_email='owner@example.com',refresh_ciphertext='test'))
     raw={}
     deleted=[]
@@ -94,7 +94,7 @@ def test_wrong_attachment_is_rejected_before_success(monkeypatch):
     try:
         response=TestClient(main.app).post('/api/jobs/'+job_id+'/reviewed-draft',json={
             'contact_id':contact_id,'recipient_email':'recruiter@example.com',
-            'subject':'Application','body':'Hello, I am interested in this analytics opportunity.',
+            'subject':'Application','body':'Hi Priya,\n\nI am interested in this analytics opportunity. https://example.com/job',
             'resume_id':'data_science','resume_sha256':digest(original),'reviewed':True})
         assert response.status_code==502,response.text
         assert deleted==['wrong-draft']

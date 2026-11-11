@@ -14,13 +14,13 @@ async function load(){if(state.refreshBusy)return;state.refreshBusy=true;try{con
 function showLogin(){$('page-content').innerHTML=`<section class="panel" style="margin:70px auto;max-width:520px;padding:40px;text-align:center"><div style="font-size:35px">✳</div><h1>Welcome to Atlas</h1><p class="summary-mini">A private workspace for research, approvals and Gmail outreach. Sign in with the Google account configured as the owner.</p><a class="btn btn-dark" href="/api/auth/google/start">Sign in with Google ↗</a></section>`}
 function showSetup(){$('page-content').innerHTML=`<section class="panel" style="margin:70px auto;max-width:650px;padding:40px;text-align:center"><div style="font-size:35px">✳</div><h1>One more step: connect the database</h1><p class="summary-mini">Your Google sign-in worked, but Atlas needs persistent PostgreSQL storage before real job search and approvals can be saved. No data has been lost or emailed.</p><a class="btn btn-dark" href="https://vercel.com/dashboard/stores" target="_blank" rel="noopener noreferrer">Set up PostgreSQL ↗</a> &nbsp; <a class="btn btn-ghost" href="/">View setup checklist</a></section>`}
 function setPage(page){state.page=page;render();window.scrollTo({top:0,behavior:'smooth'});$('app-shell').classList.remove('open')}
-function render(){if(!state.data)return;const d=state.data;document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.page===state.page));const labels={overview:'Overview',jobs:'Imported jobs',outbox:'Outreach queue',activity:'Activity log',logs:'Job logs',settings:'Configuration'};$('breadcrumb-page').textContent=labels[state.page];$('nav-job-count').textContent=d.totals?.new_jobs??d.jobs.filter(j=>j.status==='discovered').length;
+function render(){if(!state.data)return;const d=state.data;document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.page===state.page));const labels={overview:'Overview',jobs:'Imported jobs',outbox:'Outreach queue',activity:'Activity log',logs:'Job logs',emails:'Email studio',settings:'Configuration'};$('breadcrumb-page').textContent=labels[state.page];$('nav-job-count').textContent=d.totals?.new_jobs??d.jobs.filter(j=>j.status==='discovered').length;
 $('run-note').textContent=d.integrations.gemini?'AI email review · Scheduled sends require active scheduler':'ChatGPT approvals → Excel → Atlas';
 $('demo-banner').innerHTML=d.demo?`<div class="notice"><i>!</i><div><strong>DEMO ENVIRONMENT</strong> — All five sample companies and openings are fictional. No real jobs, contacts, messages or emails are being sent. Connect integrations for live use.</div></div>`:(!(d.totals?.jobs??d.jobs.length))?`<div class="notice"><i>⇧</i><div><strong>READY FOR YOUR FIRST IMPORT</strong> — Review and approve jobs in ChatGPT, then upload the approved Excel/CSV file. No paid AI API is needed.</div></div>`:'';
 const connections=[['Google Gmail','G',d.integrations.gmail],['Spreadsheet import','▤',true],['RocketReach','R',d.integrations.rocketreach],['Email drafting model','✦',d.integrations.gemini]];
 $('sidebar-connections').innerHTML=connections.map(x=>`<div class="side-connection"><span class="service-icon">${x[1]}</span><span>${x[0]}</span><span class="service-status ${x[2]?'connected':''}" title="${x[2]?'Configured':'Not configured'}"></span></div>`).join('');
 $('metrics').innerHTML=metricCards();$('metrics').style.display=['overview','jobs'].includes(state.page)?'grid':'none';
-const view=$('main-view');if(state.page==='overview'||state.page==='jobs'){view.innerHTML=`<div class="content-grid">${jobPanel()}${detailPanel()}</div>`}else if(state.page==='outbox'){view.innerHTML=outboxPanel()}else if(state.page==='logs'){view.innerHTML=logsPanel()}else if(state.page==='activity'){view.innerHTML=activityPanel()}else{view.innerHTML=settingsPanel()}
+const view=$('main-view');if(state.page==='overview'||state.page==='jobs'){view.innerHTML=`<div class="content-grid">${jobPanel()}${detailPanel()}</div>`}else if(state.page==='outbox'){view.innerHTML=outboxPanel()}else if(state.page==='logs'){view.innerHTML=logsPanel()}else if(state.page==='emails'){view.innerHTML=emailControlsPanel()}else if(state.page==='activity'){view.innerHTML=activityPanel()}else{view.innerHTML=settingsPanel()}
  scheduleRocketReachRecheck();
 }
 function metricCards(){const d=state.data;const approved=d.jobs.filter(j=>['approved','reply_received'].includes(j.status)).length;const scheduled=d.outreach.filter(o=>['draft_ready','scheduled','followup_scheduled','demo_draft','awaiting_gmail','pending_contact'].includes(o.status)).length;const replies=d.outreach.filter(o=>o.last_reply_at).length;
@@ -328,23 +328,25 @@ function selectedResume(){
  return {resume_id:selected.id,resume_sha256:selected.sha256};
 }
 
-async function geminiPreview(id){
+async function geminiPreview(id, selection=null){
+ if(!selection)return openDraftSetup(id);
  try{
-  toast('Selecting relevant achievements for your email…');
-  const r=await api('/api/jobs/'+id+'/gemini-preview',{method:'POST'});
+  toast('Generating controlled email and validating required fields…');
+  const r=await api('/api/jobs/'+id+'/gemini-preview?'+new URLSearchParams(selection),{method:'POST'});
   if(!r.resumes?.length)throw Error('Resume selection was not returned. Please refresh Atlas.');
   const j=jobOf(id);reviewedJobId=id;reviewedPdfPreviewed=false;reviewResumes=r.resumes;
-  const status=r.mode==='ai_email'?'Gemini-generated email ready':'Email generation needs attention';
+  const status=['ai_email','controlled_email'].includes(r.mode)?'Gemini-generated email ready':'Email generation needs attention';
   const warning=r.warning?'<p class="hint" style="color:#a34e3b">'+escapeHtml(r.warning)+'</p>':'';
   const promptProof='<p class="hint">Email instructions: '+escapeHtml(r.prompt_source==='custom'?'Your saved configuration prompt':'Atlas default prompt')+' · '+Number(r.prompt_characters||0)+' characters · fingerprint '+escapeHtml(r.prompt_fingerprint||'unknown')+'</p>';
-  const resumePicker='<label class="form-label" for="reviewed-resume">Resume version</label><select class="form-input" id="reviewed-resume">'+r.resumes.map(v=>'<option value="'+v.id+'">'+escapeHtml(v.label+' — '+v.filename)+'</option>').join('')+'</select>';
+  const resumePicker='<label class="form-label" for="reviewed-resume">Resume version</label><select class="form-input" id="reviewed-resume" disabled>'+r.resumes.map(v=>'<option value="'+v.id+'" '+(v.id===r.resume_id?'selected':'')+'>'+escapeHtml(v.label+' — '+v.filename)+'</option>').join('')+'</select>';
   const contacts=(j?.contacts||[]).filter(c=>c.email&&c.id);
-  const contactPicker=contacts.length?'<label class="form-label" style="margin-top:16px">Hiring contact / Gmail recipient</label><select class="form-input" id="reviewed-contact">'+contacts.map(c=>'<option value="'+escapeHtml(c.id)+'">'+escapeHtml(c.name+' — '+c.email)+'</option>').join('')+'</select>':'<p class="hint" style="color:#a34e3b">No contact email yet. Add a verified hiring contact or use RocketReach before creating a Gmail draft.</p>';
+  const contactPicker=contacts.length?'<label class="form-label" style="margin-top:16px">Hiring contact / Gmail recipient</label><select class="form-input" id="reviewed-contact" disabled>'+contacts.map(c=>'<option value="'+escapeHtml(c.id)+'" '+(c.id===r.contact_id?'selected':'')+'>'+escapeHtml(c.name+' — '+c.email)+'</option>').join('')+'</select>':'<p class="hint" style="color:#a34e3b">No contact email yet. Add a verified hiring contact or use RocketReach before creating a Gmail draft.</p>';
   const replace=j?.outreach?.gmail_draft_id?'<label style="display:block;margin-top:12px;font-size:13px"><input type="checkbox" id="replace-reviewed-draft"> Replace existing Gmail draft (overwrites any edits already made in Gmail)</label>':'';
   modal('<h2>Review application email</h2><p><strong>'+escapeHtml(status)+'</strong> · '+escapeHtml(r.model)+'</p>'+
-   '<p class="hint">Review the email claims and choose one of your unchanged PDFs. Nothing is sent.</p>'+promptProof+warning+
+   '<p class="hint">Validation passed · '+Number(r.repair_attempts||0)+' repair(s). Subject, greeting, source link and achievements come from controlled templates. Nothing is sent.</p>'+promptProof+warning+'<button type="button" class="btn btn-small btn-ghost" data-action="draft-setup" data-id="'+id+'">Change recipient or resume and regenerate</button>'+
    '<label class="form-label">Subject</label><input id="gemini-subject" class="form-input" maxlength="200" value="'+escapeHtml(r.subject)+'">'+
    '<label class="form-label" style="margin-top:12px">Email body</label><textarea id="gemini-body" class="form-input form-textarea" style="min-height:260px" rows="12">'+escapeHtml(r.body)+'</textarea>'+
+   '<button type="button" class="btn btn-ghost" data-action="draft-html-preview">Preview formatted email</button><div id="draft-html-preview" class="panel config-panel" style="display:none;white-space:pre-wrap"></div>'+
    '<button type="button" class="btn btn-ghost" id="copy-gemini-preview" style="margin-top:12px">Copy edited email</button>'+
    '<h3 style="margin-top:22px">Choose your resume</h3><p class="hint">Atlas attaches the exact uploaded file without editing it.</p>'+resumePicker+
    '<button type="button" class="btn btn-ghost" id="preview-reviewed-resume" style="margin-top:16px">Preview selected resume PDF</button>'+

@@ -344,7 +344,7 @@ def test_gemini_api(user: str = Depends(owner)):
 
 
 @app.post('/api/jobs/{job_id}/gemini-preview')
-def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
+def gemini_outreach_preview(job_id: str, user: str = Depends(owner), contact_id: str = '', resume_id: str = ''):
     """Fact-locked, review-only preview. Does NOT create a Gmail draft or send email."""
     if demo_mode():
         raise HTTPException(409, 'Gemini preview is disabled in demo mode.')
@@ -357,18 +357,35 @@ def gemini_outreach_preview(job_id: str, user: str = Depends(owner)):
         if not available:
             raise HTTPException(409, 'Upload your Analytics or Data Science PDF in Configuration first.')
         contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
-        name = next((c.name for c in contacts if c.email), '') or (
-            contacts[0].name if contacts else '')
+        contact = next((c for c in contacts if c.id == contact_id), None) if contact_id else next((c for c in contacts if c.email), None)
+        if not contact:
+            raise HTTPException(422, 'Choose a hiring contact before generating email')
+        name = contact.name
+        from .email_policy import load_settings
+        controls = load_settings(db)
+        if resume_id:
+            if resume_id not in ('analytics','data_science'):
+                raise HTTPException(422, 'Choose an uploaded resume version')
+            controls['resume_id'] = resume_id
+        try:
+            resume_item, _ = get_resume(db, controls['resume_id'])
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
         email_prompt = get_kv(db, 'email_generation_prompt')
         try:
-            result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt, job.post_url)
+            result = build_email_preview(job.company, job.title, job.jd or '', name, email_prompt, job.post_url, controls=controls)
         except GeminiError as exc:
             log(db, 'gemini_email_preview_failed', job.id, reason=str(exc)[:180],
                 custom_prompt_configured=bool(email_prompt))
+            db.commit()
             raise HTTPException(502, 'Email generation stopped: ' + str(exc)) from exc
         result['resumes'] = available
+        result['contact_id'] = contact.id
+        result['resume_sha256'] = resume_item['sha256']
         log(db, 'gemini_email_preview', job.id,
             mode=result['mode'], fact_ids=result['selected_fact_ids'],
+            contact_id=contact.id, repair_attempts=result['repair_attempts'], validation_status='passed',
+            resume_id=controls['resume_id'], resume_sha256=resume_item['sha256'],
             prompt_source=result['prompt_source'],
             prompt_fingerprint=result['prompt_fingerprint'],
             draft_created=False, email_sent=False)
@@ -443,7 +460,12 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
         if (contact.email.strip().lower() != data.recipient_email.strip().lower()
                 or not re.fullmatch(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+', contact.email)):
             raise HTTPException(409, 'Contact email changed. Refresh and review the recipient.')
-        row = db.execute(select(Outreach).where(Outreach.job_id == job.id)).scalar_one_or_none()
+        from .email_policy import validate_final, EmailValidationError
+        try:
+            validate_final(data.subject, data.body, contact.name, job.post_url)
+        except EmailValidationError as exc:
+            raise HTTPException(422, str(exc))
+        row = db.execute(select(Outreach).where(Outreach.job_id == job.id, Outreach.contact_id == contact.id)).scalar_one_or_none()
         if row and row.status in ('sent', 'sending', 'awaiting_reply',
                                   'followup_scheduled', 'responded', 'finished'):
             raise HTTPException(409, 'This job already has sent or active outreach; no duplicate draft created.')
@@ -467,6 +489,7 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
             draft_id = verified_id
             verified = inspect_gmail_draft(gmail_get_draft(db, draft_id))
             if (verified['to'].lower() != contact.email.lower()
+                    or job.post_url not in verified.get('html_links', [])
                     or verified['subject'] != data.subject
                     or verified['attachment_count'] != 1
                     or verified['attachment_filenames'] != [filename]
@@ -1222,6 +1245,39 @@ class SearchPromptUpdate(BaseModel):
 
 class EmailPromptUpdate(BaseModel):
     prompt: str = Field(min_length=100, max_length=6000)
+
+
+class EmailTemplateControls(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    subjects: list[str]
+    subject_mode: Literal['rotate','fixed']
+    subject_index: int
+    body_template: str
+    resume_id: Literal['analytics','data_science']
+    max_repairs: int
+    allowed_fact_ids: list[str]
+
+
+@app.get('/api/email/templates')
+def email_templates(user: str = Depends(owner)):
+    from .email_policy import load_settings, TOKENS
+    from .gemini import CAREER_FACTS
+    with session() as db:
+        return {'controls':load_settings(db), 'facts':CAREER_FACTS,
+                'variables':sorted(TOKENS), 'resumes':list_resumes(db)}
+
+
+@app.put('/api/email/templates')
+def save_email_templates(data: EmailTemplateControls, user: str = Depends(owner)):
+    from .email_policy import validate_settings, EmailValidationError
+    try:
+        value = validate_settings(data.model_dump())
+    except EmailValidationError as exc:
+        raise HTTPException(422,str(exc))
+    with session() as db:
+        set_kv(db,'email_template_controls',json.dumps(value))
+        log(db,'email_templates_updated',subject_count=len(value['subjects']),resume_id=value['resume_id'])
+    return {'saved':True, 'controls':value}
 
 
 @app.get('/api/email/prompt')
