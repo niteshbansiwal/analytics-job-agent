@@ -1418,7 +1418,9 @@ def cron_tick(request: Request):
         return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 15}
 
 
-# Vercel serves public/ directly from its CDN. Match those URLs locally too.
-# Register last so API and application routes retain precedence.
-if (ROOT / 'public').is_dir():
-    app.mount('/', StaticFiles(directory=str(ROOT / 'public')), name='frontend')
+# Match Vercel's CDN script URLs locally without catching unknown API routes.
+@app.get('/{asset_name}.js')
+def frontend_script(asset_name: str):
+    if asset_name not in ('app','workspace','email-controls'):
+        raise HTTPException(404,'Asset not found')
+    return FileResponse(ROOT / 'public' / (asset_name+'.js'), media_type='application/javascript')
