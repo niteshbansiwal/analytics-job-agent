@@ -193,7 +193,9 @@ def monitor_replies(db: Session) -> dict:
                 row.gmail_draft_id = ''
             job = db.get(Job, row.job_id)
             job.status = 'reply_received'
-            log(db, 'reply_received', row.job_id, row.id, reply_class=category, message_id=message['id'])
+            log(db, 'reply_received', row.job_id, row.id, reply_class=category, message_id=message['id'],
+                received_at=(datetime.fromtimestamp(int(message['internalDate']) / 1000, timezone.utc).isoformat() if message.get('internalDate') else None),
+                detected_at=now().isoformat())
             new += 1
             if category != "out_of_office":
                 send_telegram(f"Atlas: {'Delivery failed' if category == 'bounce' else 'Human reply received'} — {job.company} - {job.title}\nClassification: {category}\nGmail thread: https://mail.google.com/mail/u/0/#all/{row.gmail_thread_id}\nFollow-ups stopped.")
@@ -286,7 +288,9 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
                         row.gmail_draft_id = ''
                         db.get(Job, row.job_id).status = 'reply_received'
                         log(db, 'followup_stopped_on_reply', row.job_id, row.id,
-                            reply_class=row.last_reply_class, message_id=row.last_reply_message_id)
+                            reply_class=row.last_reply_class, message_id=row.last_reply_message_id,
+                            received_at=(datetime.fromtimestamp(received_ms / 1000, timezone.utc).isoformat() if received_ms else None),
+                            detected_at=now().isoformat())
                         db.commit()
                         break
                 if row.status == 'responded':

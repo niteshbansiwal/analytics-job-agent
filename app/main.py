@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 from typing import Literal
 from .resume_library import list_resumes, get_resume, save_resume, MAX_BYTES, digest
 from sqlalchemy import select, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from .config import ROOT, env, settings, demo_mode
 from .db import session, engine, Job, Contact, Outreach, Integration, Event, get_kv, set_kv, seed_demo, log, now
 from .calendar_rules import next_fixed_send
@@ -216,18 +216,34 @@ def logout():
     return response
 
 @app.get('/api/overview')
-def overview(user: str = Depends(owner)):
+def overview(user: str = Depends(owner), section: str = '', page: int = 1, search: str = '', status: str = 'all'):
     if os.getenv('VERCEL') and not env('DATABASE_URL'):
         raise HTTPException(503, 'PostgreSQL DATABASE_URL is not configured yet. See the homepage setup checklist.')
     with session() as db:
         seed_demo(db)
         db.flush()
-        jobs = db.execute(select(Job).order_by(Job.created_at.desc(), Job.id.desc())).scalars().all()
-        letters = db.execute(select(Outreach).order_by(Outreach.created_at.desc())).scalars().all()
+        from .read_model import totals, revision
         from collections import defaultdict
         from .db import KV
+        compact = bool(section)
+        page = max(1, page)
+        job_query = select(Job).where(Job.status != 'archived')
+        if search:
+            pattern = '%' + search.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            job_query = job_query.where((Job.company + ' ' + Job.title + ' ' + Job.location).ilike(pattern, escape='\\'))
+        job_status = {'new': 'discovered', 'approved': 'approved', 'replies': 'reply_received'}.get(status)
+        if job_status: job_query = job_query.where(Job.status == job_status)
+        total = db.scalar(select(func.count()).select_from(job_query.subquery())) or 0
+        page = min(page, max(1, (total + 19)//20))
+        if compact:
+            jobs = db.execute(job_query.order_by(Job.created_at.desc(), Job.id.desc()).offset((page-1)*20).limit(20)).scalars().all() if section in ('overview', 'jobs') else []
+        else:
+            jobs = db.execute(select(Job).order_by(Job.created_at.desc(), Job.id.desc())).scalars().all()
+        ids = [j.id for j in jobs]
+        letters = db.execute(select(Outreach).options(defer(Outreach.resume_b64)).where(Outreach.job_id.in_(ids))
+            .order_by(Outreach.created_at.desc())).scalars().all() if ids else []
         contact_groups = defaultdict(list)
-        contacts_all = db.execute(select(Contact)).scalars().all()
+        contacts_all = db.execute(select(Contact).where(Contact.job_id.in_(ids))).scalars().all() if ids else []
         for c in contacts_all: contact_groups[c.job_id].append(c)
         outreach_latest = {}
         for o in letters: outreach_latest.setdefault(o.job_id, o)
@@ -237,13 +253,15 @@ def overview(user: str = Depends(owner)):
             for kv in db.execute(select(KV).where(KV.key.in_(keys))).scalars():
                 try: rr_states[kv.key.split(':',1)[1]] = json.loads(kv.value)
                 except (ValueError, TypeError): pass
-        events = db.execute(select(Event).order_by(Event.created_at.desc()).limit(35)).scalars().all()
+        events = db.execute(select(Event).order_by(Event.created_at.desc()).limit(35)).scalars().all() if not compact or section == 'activity' else []
         integration = db.get(Integration, 'gmail')
         cfg = settings()
         return {
             'demo': demo_mode(),
             'resumes': list_resumes(db),
-            'jobs': [json_job(j, db, contact_groups[j.id], outreach_latest.get(j.id), rr_states) for j in jobs],
+            'jobs': [json_job(j, db, contact_groups[j.id], outreach_latest.get(j.id, False), rr_states) for j in jobs],
+            'totals': totals(db), 'revision': revision(db),
+            'jobs_page': {'page': page, 'total': total, 'page_size': 20},
             'outreach': [json_outreach(o) for o in letters],
             'events': [{'action': e.action, 'details': json.loads(e.details or '{}'),
                         'at': e.created_at.isoformat(), 'job_id': e.job_id} for e in events],
@@ -766,13 +784,65 @@ def import_batch_progress(batch_id: str, user: str = Depends(owner)):
         }
 
 
+@app.get('/api/workspace/changes')
+def workspace_changes(response: Response, user: str = Depends(owner)):
+    from .read_model import revision
+    response.headers['Cache-Control'] = 'private, no-store'
+    with session() as db:
+        return {'revision': revision(db)}
+
+
+@app.get('/api/workspace/outreach')
+def workspace_outreach(user: str = Depends(owner), page: int = 1, page_size: int = 25,
+                       search: str = '', status: str = 'all'):
+    from .read_model import outreach_page
+    with session() as db:
+        return outreach_page(db, max(1, page), min(100, max(1, page_size)), search[:200], status)
+
+
+@app.get('/api/workspace/logs')
+def workspace_logs(user: str = Depends(owner), page: int = 1, page_size: int = 25,
+                   search: str = '', batch: str = '', start: str = '', end: str = '', event_type: str = '', job_id: str = ''):
+    from .read_model import job_logs
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    try:
+        def date_bound(value):
+            return datetime.strptime(value, '%Y-%m-%d').replace(tzinfo=ZoneInfo('Asia/Kolkata')).astimezone(timezone.utc) if value else None
+        lower, upper = date_bound(start), date_bound(end)
+        if upper: upper += timedelta(days=1)
+    except ValueError:
+        raise HTTPException(422, 'Use YYYY-MM-DD for log date filters')
+    with session() as db:
+        return job_logs(db, max(1, page), min(100, max(1, page_size)), search[:200], batch[:32], lower, upper, event_type[:120], job_id[:36])
+
+
+@app.get('/api/workspace/jobs/{job_id}/timeline')
+def workspace_timeline(job_id: str, user: str = Depends(owner), page: int = 1):
+    from .read_model import timeline
+    with session() as db:
+        if not db.get(Job, job_id): raise HTTPException(404, 'Job not found')
+        return timeline(db, job_id, max(1, page))
+
+
+@app.get('/api/workspace/outreach/{outreach_id}')
+def workspace_outreach_detail(outreach_id: str, user: str = Depends(owner)):
+    with session() as db:
+        row = db.get(Outreach, outreach_id)
+        if not row: raise HTTPException(404, 'Outreach not found')
+        job = db.get(Job, row.job_id)
+        return {'outreach': json_outreach(row), 'job': json_job(job, db)}
+
+
 @app.get('/api/jobs/{job_id}')
 def job_details(job_id: str, user: str = Depends(owner)):
     with session() as db:
         job = db.get(Job, job_id)
         if not job:
             raise HTTPException(404, 'Job not found')
-        return json_job(job, db)
+        contacts = db.execute(select(Contact).where(Contact.job_id == job_id)).scalars().all()
+        states = {c.id: _rocketreach_state(db, c.id) for c in contacts}
+        return json_job(job, db, contacts=contacts, rr_states=states)
 
 @app.post('/api/jobs/{job_id}/approve')
 def approve(job_id: str, user: str = Depends(owner)):
@@ -878,6 +948,7 @@ def _save_rocketreach_result(db: Session, contact: Contact, result: dict,
     if status == 'returned':
         contact.email = result['email']
         contact.email_status = result.get('email_status', 'rocketreach_unverified')
+        log(db, 'contact_enrichment_completed', contact.job_id, contact_id=contact.id, source='RocketReach')
     # A temporary provider failure should not erase a live lookup.
     temporary_error = status in ('api_error', 'rate_limited') and is_check
     if temporary_error and previous.get('status') in ('pending', 'awaiting_email', 'pending_manual'):
@@ -1029,6 +1100,8 @@ def save_import_batch(db, result, filename, started_at):
         'job_ids': result['job_ids'], 'contacts_by_job': contact_scope,
         'summary': summary,
     }))
+    for job_id in result['job_ids']:
+        log(db, 'job_uploaded', job_id, batch_id=batch_id, filename=filename[:120])
     result['batch_id'] = batch_id
     return contact_scope
 

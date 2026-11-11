@@ -1,8 +1,8 @@
 // Contract tests for fixed-PDF controls without external providers or a browser session.
 const fs=require('node:fs'); const vm=require('node:vm'); const assert=require('node:assert/strict');
 const elements=new Map();
-const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',value:'',checked:false,classList:{add(){},remove(){}},showModal(){},appendChild(){}});return elements.get(id)};
-const context=vm.createContext({console,URL,document:{getElementById:element,addEventListener(){},querySelectorAll(){return []},createElement(){return {remove(){}}}},setTimeout(){},fetch:async()=>{throw Error('Unexpected request')}});
+const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',addEventListener(){},value:'',checked:false,classList:{add(){},remove(){}},showModal(){},appendChild(){}});return elements.get(id)};
+const context=vm.createContext({console,URL,localStorage:{getItem(){return null}},document:{getElementById:element,addEventListener(){},querySelectorAll(){return []},createElement(){return {remove(){}}}},setTimeout(){},fetch:async()=>{throw Error('Unexpected request')}});
 let source=fs.readFileSync('public/app.js','utf8');source=source.replace(/load\(\);\s*$/,'');vm.runInContext(source,context);
 vm.runInContext(`state.data={demo:false,jobs:[{id:'job',contacts:[]}],integrations:{},settings:{},resumes:[{id:'analytics',label:'Analytics Professional',configured:true,filename:'analytics.pdf',page_count:1,sha256:'a'.repeat(64)},{id:'data_science',label:'Data Science',configured:false}]};`,context);
 const html=vm.runInContext('settingsPanel()',context);
