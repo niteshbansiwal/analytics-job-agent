@@ -226,3 +226,10 @@ def test_owner_v2_and_followup():
     assert followup.startswith('Hi Shikha,') and 'Visa' in followup
     with pytest.raises(EmailValidationError, match='Follow-up'):
         validate_settings({'followup_template': 'Hello person'})
+
+
+def test_linked_html_label_is_not_an_unfilled_placeholder():
+    from app.email_policy import assert_no_variables
+    assert_no_variables('A short subject', '<a href="https://jobs.example.com/post">link here</a>')
+    with pytest.raises(EmailValidationError, match='unfilled link'):
+        assert_no_variables('A short subject', 'click link here')

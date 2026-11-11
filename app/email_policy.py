@@ -56,7 +56,11 @@ def assert_no_variables(subject, body):
         raise EmailValidationError('Subject must be one line')
     if '\\n' in subject + body or '\\r' in subject + body:
         raise EmailValidationError('Email contains literal escaped newlines')
-    if re.search(r'(?i)\b(?:link here|insert link|job link here)\b', body):
+    # The HTML renderer legitimately uses "link here" as an HTTPS anchor label.
+    # Treat only unlinked occurrences as placeholders, not a real clickable link.
+    body_without_verified_link_labels = re.sub(
+        r'<a\s+href="https://[^"]+"[^>]*>link here</a>', '', body, flags=re.I)
+    if re.search(r'(?i)\b(?:link here|insert link|job link here)\b', body_without_verified_link_labels):
         raise EmailValidationError('Email contains an unfilled link label')
 
 
