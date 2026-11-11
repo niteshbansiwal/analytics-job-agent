@@ -28,7 +28,7 @@ vm.runInContext(fs.readFileSync('public/workspace.js','utf8').replace(/load\(\);
  assert.equal(requests.length,before+1); // unchanged revision must not fetch full data
  assert(requests.every(([,method])=>method==='GET'));
  assert(fs.readFileSync('public/index.html','utf8').includes('data-page="logs"'));
- assert(fs.readFileSync('public/index.html','utf8').includes('/assets/email-controls.js?v=fast-1'));
+ assert(fs.readFileSync('public/index.html','utf8').includes('/email-controls.js?v=fast-1'));
  vm.runInContext(`state.page='emails';state.emailControls={controls:{subjects:['{{first_name}}, analytics at {{company}}'],subject_mode:'rotate',subject_index:0,body_template:'Hi {{first_name}},',max_repairs:2,resume_id:'analytics',allowed_fact_ids:['dashboards']},facts:{dashboards:'Verified dashboards achievement'},resumes:[]};render();`,context);
  assert(element('main-view').innerHTML.includes('Email studio'));
  assert(element('main-view').innerHTML.includes('Body template'));

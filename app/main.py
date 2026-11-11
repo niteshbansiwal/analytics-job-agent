@@ -1416,3 +1416,9 @@ def cron_tick(request: Request):
         log(db, 'scheduler_tick', **results)
         db.commit()
         return {**results, 'interval_minutes': interval, 'heartbeat_minutes': 15}
+
+
+# Vercel serves public/ directly from its CDN. Match those URLs locally too.
+# Register last so API and application routes retain precedence.
+if (ROOT / 'public').is_dir():
+    app.mount('/', StaticFiles(directory=str(ROOT / 'public')), name='frontend')
