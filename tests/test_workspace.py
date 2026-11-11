@@ -115,3 +115,14 @@ def test_compact_overview_and_ist_date_filter(monkeypatch):
         assert client.get('/api/workspace/logs?job_id='+selected).json()['total'] == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_vercel_html_routes_use_static_cdn(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    monkeypatch.setenv('VERCEL', '1')
+    client = TestClient(app)
+    for path, target in [('/', '/welcome.html'), ('/app', '/index.html')]:
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers['location'] == target

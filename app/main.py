@@ -111,10 +111,14 @@ def preview():
 
 @app.get('/')
 def index():
+    if os.getenv('VERCEL'):
+        return RedirectResponse('/welcome.html', status_code=307)
     return FileResponse(ROOT / 'public' / 'welcome.html', media_type='text/html', headers={'Cache-Control': 'no-store'})
 
 @app.get('/app')
 def workspace():
+    if os.getenv('VERCEL'):
+        return RedirectResponse('/index.html', status_code=307)
     return FileResponse(ROOT / 'public' / 'index.html', media_type='text/html', headers={'Cache-Control': 'no-store'})
 
 @app.get('/api/health')
