@@ -9,7 +9,7 @@ from .db import Job, Contact, Outreach, Integration, get_kv, set_kv, log, now
 from .config import demo_mode, env
 from .resume_library import get_resume
 from .gemini import build_email_preview
-from .integrations import gmail_create_draft, gmail_get_draft, inspect_gmail_draft, rocketreach_lookup, rocketreach_check_status, send_telegram
+from .integrations import gmail_create_draft, gmail_get_draft, inspect_gmail_draft, rocketreach_lookup, rocketreach_lookup_name, rocketreach_check_status, send_telegram
 from .scheduling import schedule_slot, holidays
 from .calendar_rules import next_fixed_send
 from .linkedin_urls import linkedin_profile_url
@@ -161,21 +161,20 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
         else:
             contact = None
         if not contact:
-            # Paid RocketReach lookups require a concrete person profile; never guess emails.
+            # Search the named person at the employer first. Use LinkedIn only if that fails.
             if not env('ROCKETREACH_API_KEY'):
                 _failure(db, row, 'No contact email and RocketReach is not configured')
                 continue
             candidate = db.get(Contact, row.contact_id)
-            if candidate and not linkedin_profile_url(candidate.linkedin_url):
-                candidate = None
-            if not candidate:
-                _failure(db, row, 'No usable LinkedIn person profile for enrichment')
+            if not candidate or (candidate.name == 'Hiring Team' and not linkedin_profile_url(candidate.linkedin_url)):
+                _failure(db, row, 'No usable named contact or LinkedIn person profile for enrichment')
                 continue
             # Share the same persisted RocketReach lookup state used by manual
             # enrichment and the dashboard. Never start a second paid lookup
             # when the provider has already issued a person ID.
             from .main import _rocketreach_state, _save_rocketreach_result
             state = _rocketreach_state(db, candidate.id)
+            mode = get_kv(db, 'auto_rr_mode:' + candidate.id, '') or ('linkedin' if state else '')
             if not state:
                 # Migrate in-flight lookups created by older auto workers.
                 try:
@@ -191,6 +190,8 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
                         'detail': 'Continuing an existing automated RocketReach lookup',
                     }
                     set_kv(db, 'rocketreach:' + candidate.id, json.dumps(state))
+                    mode = 'linkedin'
+                    set_kv(db, 'auto_rr_mode:' + candidate.id, mode)
                     log(db, 'auto_rocketreach_legacy_lookup_migrated', job.id, row.id,
                         contact_id=candidate.id)
             try:
@@ -207,11 +208,24 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
                     log(db, 'auto_contact_enrichment_check', job.id, row.id,
                         contact_id=candidate.id, provider='RocketReach',
                         provider_id=state['provider_id'])
-                    result = rocketreach_check_status(state['provider_id'], candidate.linkedin_url)
+                    result = (rocketreach_check_status(state['provider_id'], '', candidate.name, job.company)
+                              if mode == 'name' else rocketreach_check_status(state['provider_id'], candidate.linkedin_url))
                     status = _save_rocketreach_result(db, candidate, result, is_check=True)
                 elif not state:
+                    mode = 'name' if candidate.name != 'Hiring Team' else 'linkedin'
+                    set_kv(db, 'auto_rr_mode:' + candidate.id, mode)
                     log(db, 'auto_contact_email_search', job.id, row.id,
-                        contact_id=candidate.id, provider='RocketReach')
+                        contact_id=candidate.id, provider='RocketReach', method=mode)
+                    result = (rocketreach_lookup_name(candidate.name, job.company, candidate.title)
+                              if mode == 'name' else rocketreach_lookup(candidate.linkedin_url))
+                    status = _save_rocketreach_result(db, candidate, result, is_check=False)
+                elif (mode == 'name' and int(state.get('lookup_count') or 0) < 2
+                      and state.get('status') in ('not_found', 'identity_unverified')
+                      and linkedin_profile_url(candidate.linkedin_url)):
+                    set_kv(db, 'auto_rr_mode:' + candidate.id, 'linkedin')
+                    mode = 'linkedin'
+                    log(db, 'auto_contact_email_search', job.id, row.id,
+                        contact_id=candidate.id, provider='RocketReach', method='linkedin')
                     result = rocketreach_lookup(candidate.linkedin_url)
                     status = _save_rocketreach_result(db, candidate, result, is_check=False)
                 else:
@@ -230,6 +244,9 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
                         next_check_at=status.get('next_check_at', ''))
                     continue
                 else:
+                    if mode == 'name' and status.get('status') in ('not_found', 'identity_unverified') and linkedin_profile_url(candidate.linkedin_url):
+                        log(db, 'auto_contact_profile_fallback_queued', job.id, row.id, contact_id=candidate.id)
+                        continue
                     _failure(db, row, 'RocketReach lookup needs review: ' +
                              str(status.get('status', 'unknown')) + ' — ' +
                              str(status.get('detail', ''))[:110])

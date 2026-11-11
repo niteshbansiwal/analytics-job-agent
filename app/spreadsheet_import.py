@@ -16,7 +16,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from sqlalchemy import select
 
-from .db import Job, Contact, log
+from .db import Job, Contact, log, set_kv
 from .discovery import canonical, ranking, source_type
 from .duplicates import possible_matches
 from .linkedin_urls import linkedin_profile_url
@@ -25,16 +25,14 @@ MAX_FILE_BYTES = 2_000_000
 MAX_ROWS = 250
 
 HEADERS = (
-    'company', 'title', 'location', 'post_url', 'source', 'posted_at',
-    'post_age', 'author_name', 'author_url', 'apply_url', 'jd',
-    'jd_source_url', 'jd_access_status', 'fit_why',
-    'contact_1_name', 'contact_1_title', 'contact_1_type', 'contact_1_linkedin',
-    'contact_1_evidence', 'contact_1_email',
-    'contact_2_name', 'contact_2_title', 'contact_2_type', 'contact_2_linkedin',
-    'contact_2_evidence', 'contact_2_email',
-)
+    'their_stack_id', 'company', 'title', 'location', 'posted_at',
+    'their_stack_discovered', 'added_to_radar', 'post_url', 'jd',
+    'research_status', 'contact_strategy',
+) + tuple(f'contact_{i}_{field}' for i in range(1, 6) for field in
+          ('name', 'title', 'location', 'type', 'linkedin', 'email', 'email_status'))
 ALIASES = {
     'job_title': 'title', 'role': 'title', 'job_role': 'title',
+    'job_location': 'location',
     'employer': 'company', 'organisation': 'company', 'organization': 'company',
     'job_link': 'post_url', 'job_url': 'post_url', 'posting_url': 'post_url',
     'original_post_url': 'post_url', 'source_url': 'post_url',
@@ -53,6 +51,12 @@ ALIASES = {
     'fit_notes': 'fit_why',
     'fit_match': 'fit_why',
     'contact_association': 'contact_1_association',
+    'their_stack_id': 'their_stack_id',
+    'theirstack_id': 'their_stack_id',
+    'their_stack_discovered': 'their_stack_discovered',
+    'added_to_radar': 'added_to_radar',
+    'research_status': 'research_status',
+    'contact_strategy': 'contact_strategy',
 }
 
 
@@ -190,7 +194,7 @@ def _import_contacts(db, job, item, number, errors):
     existing = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
     created = 0
     included_ids = []
-    for index in (1, 2):
+    for index in range(1, 6):
         prefix = f'contact_{index}_'
         name = item.get(prefix + 'name', '').strip()[:120]
         raw_profile = item.get(prefix + 'linkedin', '')
@@ -202,13 +206,17 @@ def _import_contacts(db, job, item, number, errors):
             email = ''
         if raw_profile and not profile:
             errors.append(f'Row {number}: contact {index} LinkedIn URL must be an HTTPS linkedin.com URL; original value not changed.')
-        if not (email or profile or evidence):
-            if name: errors.append(f'Row {number}: contact {index} has no usable email or profile.')
+        if not (email or profile or evidence or name):
             continue
         category = item.get(prefix + 'type', '').strip().lower()
+        supplied_status = item.get(prefix + 'email_status', '').strip().lower()[:60]
+        if supplied_status and supplied_status not in ('verified', 'risky', 'unverified', 'unknown', 'valid', 'invalid'):
+            errors.append(f'Row {number}: contact {index} email status unknown; treated as unverified.')
+            supplied_status = 'unverified'
+        email_status = 'spreadsheet_' + (supplied_status or 'unverified') if email else 'unavailable'
         poster = bool(profile and _public_https_url(item.get('author_url', '')) == profile)
         if poster: category = 'poster'
-        if category not in ('poster', 'hr', 'senior_analytics', ''):
+        if category not in ('poster', 'hr', 'senior_analytics', 'potential_hiring_manager', 'hiring_manager', 'recruiter', ''):
             errors.append(f'Row {number}: contact {index} type unknown; treated as potential contact.')
             category = ''
         match = next((c for c in existing if
@@ -222,11 +230,13 @@ def _import_contacts(db, job, item, number, errors):
             if profile and not match.linkedin_url: match.linkedin_url, changed = profile, True
             if evidence and not match.evidence_url: match.evidence_url, changed = evidence, True
             if email and not match.email:
-                match.email, match.email_status, changed = email, 'user_supplied_unverified', True
+                match.email, match.email_status, changed = email, email_status, True
+            elif email and match.email.casefold() == email.casefold() and match.email_status.startswith('spreadsheet_') and email_status == 'spreadsheet_verified':
+                match.email_status, changed = email_status, True
             # Requeue only failures caused by a previously rejected/missing
             # LinkedIn URL. Do not retry unrelated failures or duplicate drafts.
             recovered = 0
-            if profile or match.email:
+            if profile or match.email or (match.name != 'Hiring Team' and job.company):
                 for row in db.execute(select(Outreach).where(Outreach.contact_id == match.id, Outreach.status == 'needs_attention')).scalars():
                     if (not row.gmail_draft_id and not row.sent_at
                             and row.error.startswith('No usable LinkedIn person profile for enrichment')):
@@ -238,14 +248,21 @@ def _import_contacts(db, job, item, number, errors):
                 log(db, 'spreadsheet_contact_enriched', job.id,
                     contact_id=match.id, recovered_outreach=recovered)
             continue
+        if len(existing) >= 5:
+            errors.append(f'Row {number}: maximum five distinct contacts per job; contact {index} skipped.')
+            continue
         contact = Contact(job_id=job.id, name=name or 'Hiring Team',
             title=item.get(prefix + 'title', '').strip()[:200],
             category={'poster':'Original job poster', 'hr':'Talent acquisition contact',
-                      'senior_analytics':'Senior analytics professional'}.get(category, 'Potential hiring-side contact (spreadsheet)'),
+                      'senior_analytics':'Senior analytics professional',
+                      'potential_hiring_manager':'Potential hiring manager',
+                      'hiring_manager':'Potential hiring manager',
+                      'recruiter':'Talent acquisition contact'}.get(category, 'Potential hiring-side contact (spreadsheet)'),
             linkedin_url=profile, evidence_url=evidence,
             relationship='poster' if poster else 'potential',
-            reason='User-supplied contact; identity and hiring relationship unverified',
-            email=email, email_status='user_supplied_unverified' if email else 'unavailable')
+            reason=('User-supplied contact; identity and hiring relationship unverified. '
+                    'Spreadsheet location: ' + item.get(prefix + 'location', '').strip()[:100]),
+            email=email, email_status=email_status)
         db.add(contact)
         db.flush()
         if contact.email:
@@ -325,7 +342,12 @@ def import_rows(db, rows):
         created += 1
         log(db, 'job_spreadsheet_imported', job.id, source_url=url, row=number,
             research_source=item.get('source', '')[:150], jd_source=jd_source,
-            jd_access=jd_access, evidence='owner_uploaded_spreadsheet')
+            jd_access=jd_access, their_stack_id=item.get('their_stack_id', '')[:80],
+            their_stack_discovered=item.get('their_stack_discovered', '')[:100],
+            added_to_radar=item.get('added_to_radar', '')[:100],
+            research_status=item.get('research_status', '')[:80],
+            contact_strategy=item.get('contact_strategy', '')[:80],
+            evidence='owner_uploaded_spreadsheet')
         if candidates:
             log(db, 'possible_duplicate_requires_review', job.id,
                 candidate_ids=[x['job_id'] for x in candidates], row=number)
@@ -356,24 +378,20 @@ def template_xlsx() -> bytes:
         col.alignment = Alignment(wrap_text=True, vertical='center')
     for col in ws.columns:
         letter = col[0].column_letter
-        ws.column_dimensions[letter].width = 35 if col[0].value in (
-            'post_url', 'author_url', 'apply_url', 'contact_1_linkedin',
-            'contact_2_linkedin', 'contact_1_evidence', 'contact_2_evidence',
-            'jd_source_url',
-        ) else (70 if col[0].value == 'jd' else 22)
+        ws.column_dimensions[letter].width = (70 if col[0].value == 'jd' else
+            45 if col[0].value == 'post_url' or col[0].value.endswith(('_linkedin', '_email')) else 22)
     notes = wb.create_sheet('Instructions')
     instructions = [
-        ('ATLAS · CHATGPT JOB RESEARCH IMPORT',),
+        ('ATLAS · GLOBAL JOB RADAR IMPORT',),
         ('One row per real job. The Jobs sheet is the only sheet imported.',),
         ('Required columns: company, title, post_url. Include a detailed source-grounded JD for useful email drafts.',),
         ('Use an original public HTTPS URL for each job. Do not invent URLs.',),
         ('posted_at: exact ISO date/time only when supported by the original source.',),
         ('If a posting time is unknown, leave posted_at blank; do not estimate.',),
         ('jd: transcribe the accessible responsibilities, qualifications and team context. No invented text. Limit 12,000 characters.',),
-        ('jd_source_url: original JD page; jd_access_status: full, partial or blocked. Full requires at least 200 characters.',),
-        ('author_name/author_url: only when the actual hiring post author is known.',),
-        ('If poster is verified, put that person in contact_1 as type poster; leave contact_2 blank.',),
-        ('Otherwise contact_1 is HR (type hr), contact_2 is senior analytics (type senior_analytics).',),
+        ('Up to five contacts per job: name, title, location, type, LinkedIn, email and email status.',),
+        ('A supplied professional email is used first. If blank, RocketReach searches by name and company, then by LinkedIn profile if needed.',),
+        ('TheirStack ID, discovery dates, research status and contact strategy are retained in the import activity log.',),
         ('Do not claim a potential contact is the confirmed hiring manager.',),
         ('No API keys needed. Upload the completed .xlsx or .csv from the Atlas dashboard.',),
         ('Import queues outreach. Review recipients before uploading; scheduled email sending runs separately.',),

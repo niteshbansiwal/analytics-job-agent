@@ -208,7 +208,8 @@ def answer_telegram_callback(callback_id: str, message: str):
         client.post(f'https://api.telegram.org/bot{token}/answerCallbackQuery',
                     json={'callback_query_id': callback_id, 'text': message})
 
-def _rocketreach_email_result(payload: dict | list, requested_linkedin: str = '') -> dict:
+def _rocketreach_email_result(payload: dict | list, requested_linkedin: str = '',
+                              expected_name: str = '', expected_company: str = '') -> dict:
     """Parse a classic RocketReach lookup/checkStatus response without declaring premature misses.
 
     A completed lookup can initially have no work email. Preserve its profile ID
@@ -256,6 +257,19 @@ def _rocketreach_email_result(payload: dict | list, requested_linkedin: str = ''
     if supplied_slug and returned_slug and supplied_slug != returned_slug:
         return {'status': 'identity_mismatch', 'provider_id': person_id,
                 'detail': 'Provider profile does not match requested LinkedIn identity'}
+
+    if expected_name and state in ('complete', 'completed', 'success'):
+        normalized = lambda value: re.sub(r'[^a-z0-9]+', ' ', str(value or '').casefold()).strip()
+        returned_name = person.get('name') or person.get('full_name') or ''
+        employer = person.get('current_employer') or person.get('employer') or person.get('company') or ''
+        if isinstance(employer, dict):
+            employer = employer.get('name') or employer.get('company_name') or ''
+        expected_company_tokens = set(normalized(expected_company).split()) - {'ltd', 'limited', 'inc', 'llc', 'private', 'technology', 'technologies'}
+        actual_company_tokens = set(normalized(employer).split())
+        if (normalized(returned_name) != normalized(expected_name)
+                or not employer or not expected_company_tokens.intersection(actual_company_tokens)):
+            return {'status': 'identity_unverified', 'provider_id': person_id,
+                    'detail': 'Name/employer lookup did not verify this contact identity'}
 
     if state in ('progress', 'searching', 'queued', 'pending', 'not queued', 'not_queued'):
         return {'status': 'pending', 'provider_id': person_id,
@@ -330,10 +344,25 @@ def rocketreach_lookup(linkedin_url: str) -> dict:
     return _rocketreach_email_result(response, linkedin_url)
 
 
-def rocketreach_check_status(person_id: str, linkedin_url: str) -> dict:
+def rocketreach_lookup_name(name: str, company: str, title: str = '') -> dict:
+    """Try an exact person and employer before using a supplied LinkedIn profile."""
+    if not name or name == 'Hiring Team' or not company:
+        return {'status': 'identity_unverified', 'detail': 'Full name and employer are required'}
+    params = {'name': name, 'current_employer': company,
+              'lookup_type': 'standard', 'return_cached_emails': 'true'}
+    if title:
+        params['title'] = title
+    response = _rocketreach_request('person/lookup', params=params)
+    if isinstance(response, dict) and response.get('status') in ('not_connected', 'api_error', 'rate_limited', 'not_found'):
+        return response
+    return _rocketreach_email_result(response, expected_name=name, expected_company=company)
+
+
+def rocketreach_check_status(person_id: str, linkedin_url: str,
+                             expected_name: str = '', expected_company: str = '') -> dict:
     if not str(person_id).isdigit():
         return {'status': 'api_error', 'detail': 'Missing provider lookup ID'}
     response = _rocketreach_request('person/checkStatus', params={'ids': str(person_id)})
     if isinstance(response, dict) and response.get('status') in ('not_connected', 'api_error', 'rate_limited', 'not_found'):
         return response
-    return _rocketreach_email_result(response, linkedin_url)
+    return _rocketreach_email_result(response, linkedin_url, expected_name, expected_company)

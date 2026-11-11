@@ -271,6 +271,54 @@ def test_rocketreach_completed_alias_and_missing_status():
     assert _rocketreach_email_result({'id': 123, 'work_email': 'jane@company.com'}, LINKEDIN)['status'] == 'returned'
 
 
+def test_name_lookup_verifies_identity_before_using_email(monkeypatch):
+    from app import integrations
+    calls = []
+    def provider(path, *, params):
+        calls.append(params)
+        return {'status': 'complete', 'id': 123, 'name': 'Jane Analyst',
+                'current_employer': 'Example Payments', 'work_email': 'jane@example.com'}
+    monkeypatch.setattr(integrations, '_rocketreach_request', provider)
+    result = integrations.rocketreach_lookup_name('Jane Analyst', 'Example Payments')
+    assert result['email'] == 'jane@example.com'
+    assert calls[0]['current_employer'] == 'Example Payments'
+    assert integrations._rocketreach_email_result(
+        {'status': 'complete', 'name': 'Someone Else', 'company': 'Example Payments',
+         'work_email': 'other@example.com'}, expected_name='Jane Analyst',
+        expected_company='Example Payments')['status'] == 'identity_unverified'
+
+
+def test_automatic_enrichment_tries_name_then_profile(monkeypatch):
+    from app import auto_pipeline
+    from app.db import Outreach, set_kv, get_kv
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        job = Job(company='Example Payments', title='Manager Analytics',
+                  source='test', post_url='https://example.com/jobs/1')
+        db.add(job); db.flush()
+        contact = Contact(job_id=job.id, name='Jane Analyst', linkedin_url=LINKEDIN)
+        db.add(contact); db.flush()
+        row = Outreach(job_id=job.id, contact_id=contact.id, status='pending_contact')
+        db.add(row); db.flush()
+        set_kv(db, 'atlas_auto_import_enabled', 'true')
+        calls = []
+        monkeypatch.setattr(auto_pipeline, 'demo_mode', lambda: False)
+        monkeypatch.setattr(auto_pipeline, 'env', lambda key: 'key')
+        monkeypatch.setattr(auto_pipeline, 'rocketreach_lookup_name',
+                            lambda name, company, title: (calls.append('name') or {'status':'not_found'}))
+        monkeypatch.setattr(auto_pipeline, 'rocketreach_lookup',
+                            lambda url: (calls.append('profile') or {'status':'not_found'}))
+        monkeypatch.setattr(auto_pipeline, 'send_telegram', lambda *args: None)
+        auto_pipeline.process_pending(db, limit=1)
+        assert row.status == 'pending_contact'
+        auto_pipeline.process_pending(db, limit=1)
+        assert calls == ['name', 'profile']
+        assert row.status == 'needs_attention'
+        assert get_kv(db, 'auto_rr_mode:' + contact.id) == 'linkedin'
+    engine.dispose()
+
+
 def test_mime_has_clickable_job_link():
     from app.integrations import build_mime
     from email.parser import BytesParser

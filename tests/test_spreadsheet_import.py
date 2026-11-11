@@ -37,7 +37,7 @@ def test_template_round_trip():
     wb = load_workbook(io.BytesIO(raw), read_only=True)
     assert wb.sheetnames == ['Jobs', 'Instructions']
     assert list(next(wb['Jobs'].values)) == list(HEADERS)
-    assert 'jd_source_url' in HEADERS and 'contact_2_type' in HEADERS
+    assert 'their_stack_id' in HEADERS and 'contact_5_email_status' in HEADERS
     wb.close()
 
 
@@ -74,13 +74,40 @@ def test_bad_urls_are_skipped(db):
     assert result['skipped'] == 4
 
 
-def test_contact_without_profile_or_evidence_is_omitted(db):
+def test_named_contact_without_profile_can_be_enriched_by_name(db):
     row = sample_row()
     row['contact_1_linkedin'] = ''
     result = import_rows(db, [(2, row)])
     assert result['created'] == 1
-    assert result['contacts_created'] == 0
-    assert any('contact 1 omitted' in e for e in result['errors'])
+    assert result['contacts_created'] == 1
+    assert db.execute(select(Contact)).scalar_one().name == 'Sample Contact'
+
+
+def test_global_radar_workbook_imports_five_contacts(db):
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Jobs and contacts'
+    ws.append(['TheirStack ID', 'Company', 'Job title', 'Job location', 'Posted date',
+               'TheirStack discovered', 'Added to Radar', 'Job URL', 'Job description',
+               'Research status', 'Contact strategy'] +
+              [f'Contact {i} {field}' for i in range(1, 6) for field in
+               ('name', 'title', 'location', 'type', 'LinkedIn', 'email', 'email status')])
+    ws.append(['123', 'Example Payments', 'Analytics Manager', 'Bangalore', '2026-11-11',
+               '', '', 'https://example.com/jobs/123', 'Manage analytics projects',
+               'complete', 'potential contacts'] +
+              [value for i in range(1, 6) for value in
+               (f'Person {i}', 'Analytics Director', 'Bangalore', 'potential_hiring_manager',
+                f'https://www.linkedin.com/in/person-{i}', f'person{i}@example.com', 'verified')])
+    out = io.BytesIO()
+    wb.save(out)
+    rows = parse_file(out.getvalue(), 'radar.xlsx')
+    result = import_rows(db, rows)
+    assert result['created'] == 1
+    assert result['contacts_created'] == 5
+    assert len(result['batch_contacts'][result['job_ids'][0]]) == 5
+    assert db.execute(select(Job)).scalar_one().location == 'Bangalore'
+    assert all(c.email_status == 'spreadsheet_verified' for c in db.execute(select(Contact)).scalars())
 
 
 def test_detailed_jd_and_verified_poster_import(db):
