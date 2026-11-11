@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session
 from .config import settings, demo_mode, env
-from .db import Job, Contact, Outreach, Event, Integration, log, now
+from .db import Job, Contact, Outreach, Event, Integration, log, now, get_kv
 from .calendar_rules import next_fixed_send, followup_due, is_workday, aware
 from .scheduling import holidays
 from .resume import tailored_pdf, resume_facts
@@ -204,21 +204,22 @@ def monitor_replies(db: Session) -> dict:
     return {'checked': len(rows), 'new_replies': new}
 
 def _create_followup_draft(db: Session, row: Outreach):
+    from .email_policy import compose_followup, load_settings, validate_final
+    job, contact = db.get(Job, row.job_id), db.get(Contact, row.contact_id)
+    if not job or not contact:
+        raise ValueError('Cannot personalize follow-up without its job and contact')
     previous = gmail_get_message(db, row.sent_message_id)
     rfc_id = message_header(previous, 'Message-ID')
-    subject = inspect_subject = row.subject
-    if not subject.lower().startswith('re:'):
-        subject = 'Re: ' + subject
-    body = ("Hello,\n\nJust following up on my earlier note about the analytics opportunity. "
-            "I'd welcome the chance to share how my experience could support the team.\n\n"
-            "Regards,\nNitesh Bansiwal")
+    subject = row.subject if row.subject.lower().startswith('re:') else 'Re: ' + row.subject
+    body = compose_followup(load_settings(db), job.company, job.title, contact.name)
+    validate_final(subject, body, contact.name, job.post_url, followup=True)
     draft = gmail_create_draft(db, row.to_email, subject, body, b'', '', row.gmail_thread_id, rfc_id)
     row.gmail_draft_id = draft['id']
-    row.subject = subject
-    row.body = body
+    row.subject, row.body = subject, body
     row.due_at = followup_due(row.sent_at)
     row.status = 'followup_scheduled'
     log(db, 'followup_draft_created', row.job_id, row.id, due_at=row.due_at, attempt=row.followup_count + 1)
+
 
 def send_due(db: Session, *, clock: datetime | None = None) -> dict:
     cfg = settings()['email']
@@ -308,6 +309,10 @@ def send_due(db: Session, *, clock: datetime | None = None) -> dict:
             assert_no_variables(latest['subject'], latest['body']+'\n'+latest.get('html_body',''))
             validate_final(latest['subject'], latest['body'], contact.name, job.post_url,
                            followup=desired_state == 'followup_scheduled')
+            if (desired_state != 'followup_scheduled'
+                    and 'EXACTLY TWO NUMBERED BULLETS' in get_kv(db, 'email_generation_prompt', '')):
+                from .email_policy import require_v2_format
+                require_v2_format(latest['body'])
             if latest['to'].strip().casefold() != row.to_email.strip().casefold():
                 raise ValueError('Gmail recipient changed; review in Atlas before sending')
             if desired_state != 'followup_scheduled':

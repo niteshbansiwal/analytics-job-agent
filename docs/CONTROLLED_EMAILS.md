@@ -1,6 +1,6 @@
 # Controlled email drafting
 
-The Email Studio provides one to four subject templates, stable rotation or a fixed subject, an editable first-email template, enabled candidate achievements, a default fixed resume PDF and zero to two LLM repair attempts.
+The Email Studio provides one to four subject templates, stable rotation or a fixed subject, editable first-email and follow-up templates, enabled candidate achievements, a default fixed resume PDF and zero to two LLM repair attempts.
 
 ## Flow
 
@@ -23,7 +23,7 @@ Atlas attaches one of the two original uploaded PDFs unchanged. Enabled facts ar
 - Excel intake, job discovery policy, Vercel schedule, holiday rules, Telegram behavior and follow-up enablement are retained.
 - Saving templates affects new generations; it does not rewrite, delete, resend or repair existing Gmail messages.
 - Existing scheduled drafts pass through the new sending checks. Invalid ones are held for review, not automatically regenerated and sent.
-- Follow-ups retain their existing generation logic. They also pass variable/header checks, recipient checks and the final draft re-read. The initial-email greeting, job-link and resume checks do not force additional attachments on a follow-up.
+- Follow-ups use the saved first-name follow-up template and Re: original subject. They also pass variable/header checks, recipient checks and the final draft re-read. The initial-email greeting, job-link and resume checks do not force additional attachments on a follow-up.
 - Preview/draft events record repair count, template subject index, selected resume and prompt fingerprint without logging full model prompts or email bodies in Job Logs.
 - No database schema migration is required; controls use the existing key/value store.
 
@@ -32,3 +32,7 @@ Atlas attaches one of the two original uploaded PDFs unchanged. Enabled facts ar
 Offline tests cover placeholder syntaxes in both fields, bounded repair, malformed or extra JSON fields, unknown facts, numeric claims, contact binding, resume selection, URL hyperlinks (including query parameters), HTML escaping, API configuration validation, manual Gmail edits, send refusal and the valid scheduler send path. Node contracts cover the new studio and formatted preview.
 
 Three unrelated existing failures remain: two holiday scheduling expectations and one spreadsheet omitted-contact warning expectation. These failures were present before this work. Previous email number/URL tests now pass after fixing escaped regexes and the hyperlink renderer. Legacy free-form email tests have been replaced by the structured output contract tests.
+
+## V2 template alignment
+
+New first emails use owner-style subjects, two numbered verified achievement bullets, the JD-specific interest paragraph after bullets, and the configured closing. Gmail HTML renders the original HTTPS job link as `link here`; the plain fallback retains the URL. Existing drafts are not overwritten without review. Saved V2 structure is enforced at send time: nonconforming scheduled drafts are held, not sent. Follow-ups use an editable template; owner prompt length is now up to 12,000 characters.

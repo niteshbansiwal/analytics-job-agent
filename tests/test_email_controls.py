@@ -10,7 +10,7 @@ from app.integrations import build_mime, inspect_gmail_draft
 
 URL='https://careers.example.com/opportunities/12345?team=analytics&region=in'
 JD='Own SQL and Python analytics, dashboards, payments and stakeholder decision support. '*3
-VALUE='My SQL and dashboard experience can support clearer payments decisions and practical analytics automation for your team.'
+VALUE="I'm interested because this role needs payments analytics, useful dashboards, and clear stakeholder decisions. I can support these priorities with SQL, business analysis, reporting automation, and a practical approach to delivering trustworthy insights."
 
 
 def output(**changes):
@@ -35,6 +35,7 @@ def test_controlled_generation_names_links_facts_and_template(monkeypatch):
     assert result['body'].startswith('Hi Shikha,\n')
     assert URL in result['body']
     assert gemini.CAREER_FACTS['dashboards'] in result['body']
+    assert result['body'].index('A bit about me:') < result['body'].index('1. ') < result['body'].index('2. ') < result['body'].index("I'm interested because")
     assert 'Shikha' not in prompts[0] and 'Sharad' not in prompts[0]
     assert 'Write crisp business-focused copy.' in prompts[0]
     assert result['repair_attempts']==0 and result['validation_status']=='passed'
@@ -76,7 +77,7 @@ def test_mime_has_exact_career_url_hyperlink_and_escaped_text():
     msg=BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw+'='*(-len(raw)%4)))
     rendered=msg.get_body(preferencelist=('html',)).get_content()
     assert '&lt;script&gt;' in rendered and '<script>' not in rendered
-    assert '>View job posting</a>' in rendered
+    assert '>link here</a>' in rendered
 
 
 def test_wrong_contact_and_missing_link_rejected():
@@ -209,3 +210,19 @@ def test_valid_controlled_draft_still_sends_through_scheduler(monkeypatch):
         result=workflow.send_due(db,clock=at)
         assert result['sent']==1 and sent==[1]
         assert row.sent_message_id=='sent-id'
+
+
+def test_owner_v2_and_followup():
+    from app.email_policy import require_v2_format, compose_followup
+    body = ('Hi Shikha,\n\nA bit about me:\n1. American Express analytics.\n'
+            '2. Plivo margin improvements.\n\n'
+            "I'm interested because I can help with this role.\n\n"
+            "If you're still hiring, would you be open to a quick conversation?\n\n"
+            'Nitesh Bansiwal')
+    require_v2_format(body)
+    with pytest.raises(EmailValidationError, match='numbered bullets'):
+        require_v2_format(body.replace('1. ', '- '))
+    followup = compose_followup(DEFAULTS, 'Visa', 'Analytics Manager', 'Shikha Sharad')
+    assert followup.startswith('Hi Shikha,') and 'Visa' in followup
+    with pytest.raises(EmailValidationError, match='Follow-up'):
+        validate_settings({'followup_template': 'Hello person'})

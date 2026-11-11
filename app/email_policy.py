@@ -12,24 +12,30 @@ class EmailValidationError(ValueError):
 
 DEFAULTS = {
     'subjects': [
-        '{{first_name}}, interested in {{company}} — {{job_title}}',
-        '{{first_name}}, analytics experience for {{company}}',
-        '{{job_title}} at {{company}} | Nitesh Bansiwal',
-        '{{first_name}}, a brief introduction for {{job_title}}',
+        "{{first_name}}, interested in {{company}}'s {{job_title}} role",
+        "{{first_name}}, reaching out about {{company}}'s {{job_title}} opening",
+        "{{first_name}}, a quick note about {{company}}'s {{job_title}} role",
+        "{{first_name}}, about the {{job_title}} opportunity at {{company}}",
     ],
     'subject_mode': 'rotate', 'subject_index': 0,
     'body_template': ('Hi {{first_name}},\n\n'
-        "I'm reaching out about the {{job_title}} opening at {{company}} ({{job_link}}).\n\n"
-        '{{value_proposition}}\n\n'
+        "I'm writing about the {{job_title}} opening at {{company}} ({{job_link}}). I'd love to be considered.\n\n"
         'A bit about me:\n{{achievements}}\n\n'
-        "I'd welcome a brief conversation about how I could contribute. My resume is attached.\n\n"
-        'Regards,\nNitesh Bansiwal'),
+        '{{value_proposition}}\n\n'
+        "If you're still hiring, would you be open to a quick conversation?\n\n"
+        'Nitesh Bansiwal\nResume attached'),
+    'followup_template': ('Hi {{first_name}},\n\n'
+        "I'm following up on my note about the {{job_title}} opportunity at {{company}}. "
+        "I believe my background in hands-on analytics and stakeholder delivery could be valuable to your team.\n\n"
+        "If you're still hiring, would you be open to a quick conversation?\n\n"
+        'Nitesh Bansiwal'),
     'resume_id': 'analytics',
     'max_repairs': 2,
     'allowed_fact_ids': ['amex_sme','amex_genai','amex_call_compliance','amex_nl_sql','plivo_margin','plivo_fraud','dashboards','stakeholders','zs_forecasting','experience'],
 }
 TOKENS = {'first_name', 'company', 'job_title', 'job_link', 'value_proposition', 'achievements'}
 SUBJECT_TOKENS = {'first_name', 'company', 'job_title'}
+FOLLOWUP_TOKENS = {'first_name', 'company', 'job_title'}
 # Match common template syntaxes and bare machine-style variable identifiers.
 VARIABLES = re.compile(
     r'\{\{[^{}\n]{1,160}\}\}|\$\{[^{}\n]{1,160}\}|<%[\s\S]{1,160}?%>'
@@ -85,7 +91,10 @@ def validate_settings(config):
     body = value['body_template']
     if not isinstance(body,str) or not 100 <= len(body) <= 4000:
         raise EmailValidationError('Body template must contain 100–4000 characters')
-    for text, allowed in [(s, SUBJECT_TOKENS) for s in subjects] + [(body,TOKENS)]:
+    followup = value['followup_template']
+    if not isinstance(followup, str) or not 80 <= len(followup) <= 2500:
+        raise EmailValidationError('Follow-up template must contain 80–2500 characters')
+    for text, allowed in [(s, SUBJECT_TOKENS) for s in subjects] + [(body,TOKENS), (followup,FOLLOWUP_TOKENS)]:
         found = re.findall(r'\{\{([a-z_]+)\}\}',text)
         if set(found) - allowed:
             raise EmailValidationError('Unknown template variable')
@@ -99,6 +108,8 @@ def validate_settings(config):
             raise EmailValidationError('Body requires exactly one {{'+token+'}}')
     if 'Nitesh Bansiwal' not in body:
         raise EmailValidationError('Keep your name in the email signature')
+    if not followup.startswith('Hi {{first_name}},') or followup.count('{{first_name}}') != 1 or 'Nitesh Bansiwal' not in followup:
+        raise EmailValidationError('Follow-up must greet the first name and retain your signature')
     if value['subject_mode'] not in ('rotate','fixed') or type(value['subject_index']) is not int or not 0 <= value['subject_index'] < len(subjects):
         raise EmailValidationError('Choose a valid subject line and rotation mode')
     if value['resume_id'] not in ('analytics','data_science'):
@@ -122,7 +133,7 @@ def compose(config, company, title, contact_name, source_url, value, fact_ids, f
     config = validate_settings(config)
     name, url = first_name(contact_name), job_url(source_url)
     values = {'first_name':name,'company':company,'job_title':title,'job_link':url,
-              'value_proposition':value,'achievements':'\n'.join('- '+facts[k] for k in fact_ids)}
+              'value_proposition':value,'achievements':'\n'.join(f'{i}. {facts[k]}' for i,k in enumerate(fact_ids, 1))}
     index = (int(hashlib.sha256((url+'|'+contact_name).encode()).hexdigest()[:8],16) % len(config['subjects'])
              if config['subject_mode']=='rotate' else config['subject_index'])
     def render(text):
@@ -131,6 +142,28 @@ def compose(config, company, title, contact_name, source_url, value, fact_ids, f
     if len(subject)>198: subject = subject[:197].rstrip()+'…'
     validate_final(subject,body,contact_name,url)
     return subject,body,index
+
+
+def compose_followup(config, company, title, contact_name):
+    config = validate_settings(config)
+    values = {'first_name': first_name(contact_name), 'company': company, 'job_title': title}
+    body = re.sub(r'\{\{([a-z_]+)\}\}', lambda m: values[m[1]], config['followup_template']).strip()
+    assert_no_variables('Re: previous application', body)
+    return body
+
+
+def require_v2_format(body):
+    """Hold scheduled drafts that do not match the owner's saved V2 structure."""
+    heading = body.find('A bit about me:\n')
+    first = re.search(r'(?m)^1\. \S', body)
+    second = re.search(r'(?m)^2\. \S', body)
+    interest = re.search(r"(?m)^I'm interested because\b", body)
+    if (heading < 0 or not first or not second or not interest
+            or not heading < first.start() < second.start() < interest.start()
+            or len(re.findall(r'(?m)^\d+\. ', body)) != 2):
+        raise EmailValidationError('Email does not follow the saved V2 template: two numbered bullets must precede the interest paragraph')
+    if "If you're still hiring, would you be open to a quick conversation?" not in body:
+        raise EmailValidationError('Email closing does not match the saved V2 template')
 
 
 def validate_final(subject, body, contact_name, source_url, *, followup=False):
@@ -153,7 +186,7 @@ def html_body(body):
     for match in re.finditer(r'https?://[^\s<>]+',body):
         url = match.group().rstrip(').,;')
         parts.append(html.escape(body[end:match.start()]))
-        parts.append('<a href="'+html.escape(url,quote=True)+'">'+html.escape('View job posting' if not end else url)+'</a>')
+        parts.append('<a href="'+html.escape(url,quote=True)+'">'+html.escape('link here' if body[max(0,match.start()-1):match.start()] == '(' else ('View job posting' if not end else url))+'</a>')
         end = match.start()+len(url)
     parts.append(html.escape(body[end:]))
     return '<html><body><div style="white-space:pre-wrap;font-family:Arial,sans-serif">'+''.join(parts)+'</div></body></html>'

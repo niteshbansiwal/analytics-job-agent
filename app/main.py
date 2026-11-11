@@ -476,6 +476,9 @@ def create_reviewed_draft(job_id: str, data: ReviewedDraftInput,
         from .email_policy import validate_final, EmailValidationError
         try:
             validate_final(data.subject, data.body, contact.name, job.post_url)
+            if 'EXACTLY TWO NUMBERED BULLETS' in get_kv(db, 'email_generation_prompt', ''):
+                from .email_policy import require_v2_format
+                require_v2_format(data.body)
         except EmailValidationError as exc:
             raise HTTPException(422, str(exc))
         row = db.execute(select(Outreach).where(Outreach.job_id == job.id, Outreach.contact_id == contact.id)).scalar_one_or_none()
@@ -1257,7 +1260,7 @@ class SearchPromptUpdate(BaseModel):
 
 
 class EmailPromptUpdate(BaseModel):
-    prompt: str = Field(min_length=100, max_length=6000)
+    prompt: str = Field(min_length=100, max_length=12000)
 
 
 class EmailTemplateControls(BaseModel):
@@ -1266,6 +1269,7 @@ class EmailTemplateControls(BaseModel):
     subject_mode: Literal['rotate','fixed']
     subject_index: int
     body_template: str
+    followup_template: str
     resume_id: Literal['analytics','data_science']
     max_repairs: int
     allowed_fact_ids: list[str]
