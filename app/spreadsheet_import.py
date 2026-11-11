@@ -232,6 +232,8 @@ def _import_contacts(db, job, item, number, errors):
                             and row.error.startswith('No usable LinkedIn person profile for enrichment')):
                         row.status, row.error = 'pending_contact', ''
                         recovered += 1
+            if changed and match.email:
+                log(db, 'contact_email_available', job.id, contact_id=match.id, source='spreadsheet')
             if changed or recovered:
                 log(db, 'spreadsheet_contact_enriched', job.id,
                     contact_id=match.id, recovered_outreach=recovered)
@@ -246,6 +248,8 @@ def _import_contacts(db, job, item, number, errors):
             email=email, email_status='user_supplied_unverified' if email else 'unavailable')
         db.add(contact)
         db.flush()
+        if contact.email:
+            log(db, 'contact_email_available', job.id, contact_id=contact.id, source='spreadsheet')
         existing.append(contact)
         included_ids.append(contact.id)
         created += 1
