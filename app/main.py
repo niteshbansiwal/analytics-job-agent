@@ -1409,7 +1409,7 @@ def cron_tick(request: Request):
 
         if should_process:
             try:
-                results['automation'] = process_pending(db)
+                results['automation'] = process_pending(db, limit=3)
             except Exception as exc:
                 db.rollback()
                 results['automation'] = {'error': str(exc)[:300]}

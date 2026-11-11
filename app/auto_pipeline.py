@@ -4,11 +4,12 @@ import json
 import re
 import time
 from datetime import timedelta
-from sqlalchemy import select
-from .db import Job, Contact, Outreach, Integration, get_kv, set_kv, log, now
+from sqlalchemy import select, or_
+from sqlalchemy.orm import aliased
+from .db import Job, Contact, Outreach, Integration, KV, get_kv, set_kv, log, now
 from .config import demo_mode, env
 from .resume_library import get_resume
-from .gemini import build_email_preview
+from .gemini import build_email_preview, GeminiError
 from .integrations import gmail_create_draft, gmail_get_draft, inspect_gmail_draft, rocketreach_lookup, rocketreach_lookup_name, rocketreach_check_status, send_telegram
 from .scheduling import schedule_slot, holidays
 from .calendar_rules import next_fixed_send
@@ -17,6 +18,21 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 KEY = 'atlas_auto_import_enabled'
+GEMINI_MAX_ATTEMPTS = 3
+GEMINI_RETRY_PREFIX = 'auto_gemini_attempts:'
+GEMINI_RETRY_AFTER_PREFIX = 'auto_gemini_retry_after:'
+# A short defer prevents immediate upload workers from retrying in a tight loop;
+# the existing 15-minute Vercel scheduler will pick the task up on its next tick.
+GEMINI_RETRY_DEFER_SECONDS = 90
+TRANSIENT_LEGACY_GEMINI_ERRORS = (
+    'Gemini service temporarily unavailable (HTTP 500)',
+    'Gemini service temporarily unavailable (HTTP 502)',
+    'Gemini service temporarily unavailable (HTTP 503)',
+    'Gemini service temporarily unavailable (HTTP 504)',
+    'Gemini quota or rate limit exceeded (HTTP 429)',
+    'Email model request timed out',
+    'Gemini API network request failed',
+)
 
 def enabled(db):
     return get_kv(db, KEY, '') == 'true'
@@ -56,6 +72,74 @@ def _failure(db, row, message):
         send_telegram('Atlas attention required: ' + job.company + ' — ' + job.title + '\n' + row.error)
     except Exception:
         pass
+
+def _recover_transient_gemini_errors(db, *, contact_ids=None):
+    """Reopen legacy Gemini 429/5xx/timeout errors on the next available tick.
+
+    Do not reopen manual cancellations, non-transient validation errors,
+    or rows that already have an external Gmail draft or sent message.
+    """
+    query = select(Outreach).where(
+        Outreach.status == 'needs_attention',
+        Outreach.error.like('Draft/schedule error: GeminiError:%'))
+    if contact_ids is not None:
+        if not contact_ids:
+            return 0
+        query = query.where(Outreach.contact_id.in_(contact_ids))
+    rows = db.execute(query.order_by(Outreach.created_at).limit(300)
+                      .with_for_update(skip_locked=True)).scalars().all()
+    recovered = 0
+    for row in rows:
+        if row.sent_at or row.gmail_draft_id or row.due_at:
+            continue
+        if not any(err in row.error for err in TRANSIENT_LEGACY_GEMINI_ERRORS):
+            continue
+        job = db.get(Job, row.job_id)
+        if not job or job.status in ('rejected', 'duplicate_review', 'archived'):
+            continue
+        key = GEMINI_RETRY_PREFIX + row.id
+        try:
+            attempts = int(get_kv(db, key, '1') or '1')
+        except (ValueError, TypeError):
+            attempts = 1
+        if attempts >= GEMINI_MAX_ATTEMPTS:
+            continue
+        set_kv(db, key, str(attempts))
+        row.status = 'pending_contact'
+        row.error = (f'Gemini transient failure; attempt {attempts}/{GEMINI_MAX_ATTEMPTS}. '
+                     'Retry queued for scheduler.')
+        recovered += 1
+        log(db, 'auto_gemini_legacy_retry_requeued', row.job_id, row.id,
+            attempt=attempts, max_attempts=GEMINI_MAX_ATTEMPTS)
+    return recovered
+
+
+def _handle_gemini_error(db, row, exc):
+    """Persist a bounded transient retry; fail closed after three failed calls."""
+    key = GEMINI_RETRY_PREFIX + row.id
+    try:
+        attempts = int(get_kv(db, key, '0') or '0') + 1
+    except (ValueError, TypeError):
+        attempts = 1
+    set_kv(db, key, str(attempts))
+    if (exc.retryable and attempts < GEMINI_MAX_ATTEMPTS
+            and not row.gmail_draft_id and not row.sent_at):
+        ready_at = now() + timedelta(seconds=GEMINI_RETRY_DEFER_SECONDS)
+        set_kv(db, GEMINI_RETRY_AFTER_PREFIX + row.id, ready_at.isoformat())
+        row.status = 'pending_contact'
+        row.error = (f'Gemini temporarily unavailable: {exc}. '
+                     f'Attempt {attempts}/{GEMINI_MAX_ATTEMPTS}; '
+                     'retry on the next scheduler trigger.')
+        log(db, 'auto_gemini_retry_queued', row.job_id, row.id,
+            contact_id=row.contact_id, attempt=attempts,
+            max_attempts=GEMINI_MAX_ATTEMPTS, next_eligible_at=ready_at,
+            reason=str(exc)[:170])
+        return True
+    _failure(db, row, 'Draft/schedule error: GeminiError: ' + str(exc)[:190] +
+             (f' (max {GEMINI_MAX_ATTEMPTS} attempts reached; review required)'
+              if exc.retryable else ' (non-retryable)'))
+    return False
+
 
 def recover_rejected_linkedin_contacts(db, *, contact_ids=None):
     """Requeue legacy Atlas URL-validation failures when a real URL is recoverable.
@@ -135,8 +219,17 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
         return {'processed': 0, 'scheduled': 0}
     recover_rejected_linkedin_contacts(db, contact_ids=contact_ids)
     recover_rejected_email_links(db, contact_ids=contact_ids)
-    # Never let an unresolved contact on an old job block later jobs.
-    query = select(Outreach).where(Outreach.status == 'pending_contact')
+    recovered_gemini = _recover_transient_gemini_errors(db, contact_ids=contact_ids)
+    # Never retry already drafted/sent work. Skip a new 503/timeout until the
+    # following scheduler tick, without blocking other pending contacts.
+    retry_at = aliased(KV)
+    query = (select(Outreach)
+             .outerjoin(retry_at, retry_at.key == GEMINI_RETRY_AFTER_PREFIX + Outreach.id)
+             .where(Outreach.status == 'pending_contact',
+                    Outreach.gmail_draft_id == '',
+                    Outreach.sent_at.is_(None),
+                    or_(retry_at.value.is_(None),
+                        retry_at.value <= now().isoformat())))
     if contact_ids is not None:
         if not contact_ids:
             return {'processed': 0, 'scheduled': 0, 'outreach_ids': []}
@@ -146,6 +239,7 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     rows = db.execute(query.order_by(Outreach.created_at, Outreach.id)
                       .limit(limit).with_for_update(skip_locked=True)).scalars().all()
     scheduled = 0
+    gemini_retries_queued = 0
     for row in rows:
         job = db.get(Job, row.job_id)
         if not job or job.status in ('rejected', 'duplicate_review'):
@@ -299,9 +393,16 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
             job.status = 'approved'
             scheduled += 1
             log(db, 'auto_email_drafted_and_scheduled', job.id, row.id, contact_id=contact.id, draft_id=draft_id, due_at=row.due_at)
+        except GeminiError as exc:
+            if _handle_gemini_error(db, row, exc):
+                gemini_retries_queued += 1
         except Exception as exc:
             _failure(db, row, 'Draft/schedule error: '+type(exc).__name__+': '+str(exc)[:150])
-    return {'processed': len(rows), 'scheduled': scheduled, 'outreach_ids': [row.id for row in rows]}
+    return {'processed': len(rows), 'scheduled': scheduled,
+            'gemini_retries_queued': gemini_retries_queued,
+            'legacy_gemini_recovered': recovered_gemini,
+            'gemini_max_attempts': GEMINI_MAX_ATTEMPTS,
+            'outreach_ids': [row.id for row in rows]}
 
 
 def process_import_batch(batch_id, *, max_seconds=230):

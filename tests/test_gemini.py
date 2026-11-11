@@ -87,3 +87,39 @@ def test_resume_numbers_and_url_digits():
     assert not gemini._draft_numbers('https://linkedin.com/jobs/view/987654321/ user123@example.com')
     assert '123456789' in gemini._draft_numbers('Saved 123456789 dollars')
 
+
+
+
+@pytest.mark.parametrize('code', [429, 500, 502, 503, 504])
+def test_gemini_transient_http_errors_are_retryable(monkeypatch, code):
+    class Response:
+        status_code = code
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs['timeout'].read == 45.0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, *args, **kwargs): return Response()
+    monkeypatch.setattr(gemini, 'env', lambda name, default='': 'fake-key'
+                        if name == 'GEMINI_API_KEY' else 'gemini-3.5-flash-lite')
+    monkeypatch.setattr(gemini.httpx, 'Client', Client)
+    with pytest.raises(gemini.GeminiError) as exc:
+        gemini.gemini_text('Test', json_output=True)
+    assert exc.value.retryable is True
+    assert str(code) in str(exc.value)
+
+
+def test_gemini_invalid_configuration_is_not_retryable(monkeypatch):
+    class Response:
+        status_code = 400
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, *args, **kwargs): return Response()
+    monkeypatch.setattr(gemini, 'env', lambda name, default='': 'fake-key'
+                        if name == 'GEMINI_API_KEY' else 'gemini-3.5-flash-lite')
+    monkeypatch.setattr(gemini.httpx, 'Client', Client)
+    with pytest.raises(gemini.GeminiError) as exc:
+        gemini.gemini_text('Test', json_output=True)
+    assert exc.value.retryable is False

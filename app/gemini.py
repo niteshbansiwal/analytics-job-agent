@@ -78,20 +78,20 @@ def gemini_text(prompt: str, *, json_output: bool = False,
     if json_output:
         payload['generationConfig']['responseMimeType'] = 'application/json'
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(45.0, connect=5.0)) as client:
             response = client.post(
                 f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
                 headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
                 json=payload)
-        if response.status_code in (502, 503, 504):
-            raise GeminiError('Gemini service temporarily unavailable (HTTP ' +
-                              str(response.status_code) + ')', retryable=True)
-        if response.status_code in (400, 401, 403, 404, 429):
+        if response.status_code in (429, 500, 502, 503, 504):
+            label = ('Gemini quota or rate limit exceeded' if response.status_code == 429
+                     else 'Gemini service temporarily unavailable')
+            raise GeminiError(f'{label} (HTTP {response.status_code})', retryable=True)
+        if response.status_code in (400, 401, 403, 404):
             labels = {400: 'Invalid Gemini request or model configuration',
                       401: 'Gemini API key rejected',
                       403: 'Gemini API access denied for this project',
-                      404: 'Gemini model not available for this API key',
-                      429: 'Gemini quota or rate limit exceeded'}
+                      404: 'Gemini model not available for this API key'}
             raise GeminiError(f'{labels[response.status_code]} (HTTP {response.status_code})')
         response.raise_for_status()
         data = response.json()
@@ -101,7 +101,7 @@ def gemini_text(prompt: str, *, json_output: bool = False,
             raise GeminiError('Gemini returned no text; check model access and content restrictions')
         return result
     except httpx.TimeoutException as exc:
-        raise GeminiError('Email model request timed out after 15 seconds', retryable=True) from exc
+        raise GeminiError('Email model request timed out (45-second response budget)', retryable=True) from exc
     except httpx.HTTPError as exc:
         raise GeminiError('Gemini API network request failed (' + type(exc).__name__ + ')',
                           retryable=True) from exc
