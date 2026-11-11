@@ -3,6 +3,8 @@ import base64
 import hashlib
 import json
 import fitz
+from sqlalchemy import select
+from .db import KV
 from .db import get_kv, set_kv, now
 
 KINDS = {'analytics': 'Analytics Professional', 'data_science': 'Data Science'}
@@ -30,13 +32,29 @@ def get_resume(db, kind):
         raise ValueError('Stored resume is unavailable or invalid. Upload it again.') from exc
 
 def list_resumes(db):
+    # Metadata is separate from the multi-MB PDFs. Attachment retrieval still
+    # verifies the original bytes and digest on every actual use.
+    keys = ['fixed_resume_meta:'+kind for kind in KINDS]
+    saved = dict(db.execute(select(KV.key, KV.value).where(KV.key.in_(keys))).all())
     result = []
-    for kind, label in KINDS.items():
+    for kind,label in KINDS.items():
+        metadata_key = 'fixed_resume_meta:'+kind
         try:
-            item, _ = get_resume(db, kind)
-            result.append({k: v for k, v in item.items() if k != 'pdf_b64'} | {'configured': True})
-        except ValueError:
-            result.append({'id': kind, 'label': label, 'configured': False})
+            if metadata_key in saved:
+                item = json.loads(saved[metadata_key])
+            else:
+                item, _ = get_resume(db,kind)
+                item = {k:v for k,v in item.items() if k != 'pdf_b64'}
+                # Backfill legacy uploads once. Conflict-safe if two first reads
+                # run concurrently; no PDF or existing metadata is overwritten.
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
+                db.execute(insert(KV).values(key=metadata_key,value=json.dumps(item))
+                           .on_conflict_do_nothing(index_elements=['key']))
+            result.append(item | {'configured':True})
+        except (ValueError,TypeError,KeyError):
+            result.append({'id':kind,'label':label,'configured':False})
     return result
 
 def save_resume(db, kind, raw, *, expected_sha256=''):
@@ -58,4 +76,5 @@ def save_resume(db, kind, raw, *, expected_sha256=''):
             'sha256': digest(raw), 'page_count': pages, 'bytes': len(raw),
             'uploaded_at': now().isoformat(), 'pdf_b64': base64.b64encode(raw).decode()}
     set_kv(db, storage_key, json.dumps(item))
+    set_kv(db, 'fixed_resume_meta:'+kind, json.dumps({k:v for k,v in item.items() if k != 'pdf_b64'}))
     return {k: v for k, v in item.items() if k != 'pdf_b64'} | {'configured': True}

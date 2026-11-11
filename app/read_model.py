@@ -21,8 +21,11 @@ def details(event):
 
 def totals(db):
     # Aggregates use metadata columns only; PDFs and email bodies never load.
-    result = {}
-    for name, model, condition in (
+    read = select(KV.key).where(KV.key == 'reply_read:' + Outreach.id,
+                                KV.value == Outreach.last_reply_message_id).exists()
+    done = select(KV.key).where(KV.key == 'reply_action_done:' + Outreach.id,
+                                KV.value == Outreach.last_reply_message_id).exists()
+    counts = (
         ('jobs', Job, Job.status != 'archived'),
         ('new_jobs', Job, Job.status == 'discovered'),
         ('approved', Job, Job.status.in_(['approved', 'reply_received'])),
@@ -30,17 +33,12 @@ def totals(db):
         ('sent', Outreach, Outreach.sent_at.is_not(None)),
         ('replied', Outreach, Outreach.last_reply_at.is_not(None)),
         ('attention', Outreach, Outreach.status == 'needs_attention'),
-    ):
-        result[name] = db.scalar(select(func.count()).select_from(model).where(condition)) or 0
-    read = select(KV.key).where(KV.key == 'reply_read:' + Outreach.id,
-                                KV.value == Outreach.last_reply_message_id).exists()
-    done = select(KV.key).where(KV.key == 'reply_action_done:' + Outreach.id,
-                                KV.value == Outreach.last_reply_message_id).exists()
-    result['unread'] = db.scalar(select(func.count()).select_from(Outreach).where(Outreach.last_reply_at.is_not(None), ~read)) or 0
-    result['action_pending'] = db.scalar(select(func.count()).select_from(Outreach).where(
-        Outreach.last_reply_at.is_not(None), ~done,
-        Outreach.last_reply_class.not_in(['bounce', 'out_of_office']))) or 0
-    return result
+        ('unread', Outreach, Outreach.last_reply_at.is_not(None) & ~read),
+        ('action_pending', Outreach, Outreach.last_reply_at.is_not(None) & ~done & Outreach.last_reply_class.not_in(['bounce','out_of_office'])),
+    )
+    # One database round trip, regardless of the number of dashboard counters.
+    return dict(db.execute(select(*(select(func.count()).select_from(model).where(condition)
+        .scalar_subquery().label(name) for name,model,condition in counts))).mappings().one())
 
 
 def revision(db):

@@ -420,7 +420,7 @@ document.addEventListener('click',async e=>{
  if(btn.dataset.page){setPage(btn.dataset.page);return}
  if(btn.dataset.filter){state.filter=btn.dataset.filter;state.jobPage=1;await load();return}
  if(btn.dataset.dashboardFilter){state.dashboardFilter=btn.dataset.dashboardFilter;state.dashboardPage=1;await load();return}
- if(btn.dataset.job){state.selected=btn.dataset.job;await load();return}
+ if(btn.dataset.job){state.selected=btn.dataset.job;render();return}
  const action=btn.dataset.action,id=btn.dataset.id;
  if(action==='dashboard-prev'){state.dashboardPage=Math.max(1,state.dashboardPage-1);await load();return}
  if(action==='dashboard-next'){state.dashboardPage++;await load();return}

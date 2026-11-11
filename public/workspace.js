@@ -1,6 +1,8 @@
 /* Read-only workspace refreshes. Sending remains exclusively on existing endpoints. */
 Object.assign(state, {page:'outbox', expanded:new Set(), detailCache:{}, logExpanded:new Set(),
   timelines:{}, logPage:1, logsSearch:'', logsJobId:'', logsBatch:'', logsStart:'', logsEnd:'', logsEvent:'', outboxSearch:'', viewToken:0});
+const workspaceViews=new Map();
+let workspaceContextAt=0;
 let workspaceLoadedAt=0, workspacePollBusy=false, workspaceSearchTimer=null;
 const oldRender=render;
 render=function(){
@@ -11,16 +13,21 @@ render=function(){
   window.scrollTo(0,position);
 };
 
-async function load({quiet=false}={}){
+async function load({quiet=false,navigation=false}={}){
   if(state.refreshBusy)return;
   if(quiet&&($('form-dialog').open||document.activeElement?.matches('input,textarea,[contenteditable="true"]')))return;
   state.refreshBusy=true;
+  const controller=new AbortController();state.readController=controller;
+  const read=path=>api(path,{signal:controller.signal});
   const page=state.page, token=++state.viewToken;
   try{
     const params=new URLSearchParams({section:page,page:String(state.jobPage),search:state.search,status:state.filter});
-    const extra=page==='outbox'?api('/api/workspace/outreach?'+new URLSearchParams({page:String(state.dashboardPage),search:state.outboxSearch,status:state.dashboardFilter})):
-      page==='emails'?api('/api/email/templates'):page==='logs'?api('/api/workspace/logs?'+new URLSearchParams({page:String(state.logPage),search:state.logsSearch,batch:state.logsBatch,start:state.logsStart,end:state.logsEnd,event_type:state.logsEvent,job_id:state.logsJobId})):Promise.resolve(null);
-    const [data,list]=await Promise.all([api('/api/overview?'+params),extra]);
+    const extra=page==='outbox'?read('/api/workspace/outreach?'+new URLSearchParams({page:String(state.dashboardPage),search:state.outboxSearch,status:state.dashboardFilter})):
+      page==='emails'?read('/api/email/templates'):page==='logs'?read('/api/workspace/logs?'+new URLSearchParams({page:String(state.logPage),search:state.logsSearch,batch:state.logsBatch,start:state.logsStart,end:state.logsEnd,event_type:state.logsEvent,job_id:state.logsJobId})):Promise.resolve(null);
+    const reuse=navigation&&state.data&&Date.now()-workspaceContextAt<30000&&!['jobs','overview','activity'].includes(page);
+    const context=reuse?Promise.resolve({...state.data,jobs:[],outreach:[],events:[]}):read('/api/overview?'+params);
+    const [data,list]=await Promise.all([context,extra]);
+    if(!reuse)workspaceContextAt=Date.now();
     if(token!==state.viewToken||page!==state.page)return;
     state.data=data;
     state.detailCache={};
@@ -32,17 +39,22 @@ async function load({quiet=false}={}){
     if(page==='jobs'||page==='overview'){
       state.jobPage=data.jobs_page.page;
       if(!data.jobs.some(j=>j.id===state.selected))state.selected=data.jobs[0]?.id||'';
-      if(state.selected){const detail=await api('/api/jobs/'+encodeURIComponent(state.selected));
-        if(page!==state.page)return;data.jobs=data.jobs.map(j=>j.id===detail.id?detail:j);}
+
     }
     if(token!==state.viewToken||page!==state.page)return;
-    workspaceLoadedAt=Date.now();render();
-  }catch(err){if(err.message.includes('Sign in'))showLogin();else if(!quiet)toast(err.message,true);}
+    workspaceLoadedAt=Date.now();
+    workspaceViews.set(workspaceViewKey(),{at:workspaceLoadedAt,data:state.data,dashboard:state.dashboard,logs:state.logs,emailControls:state.emailControls,selected:state.selected});
+    render();
+  }catch(err){if(err.name==='AbortError')return;if(err.message.includes('Sign in'))showLogin();else if(!quiet)toast(err.message,true);}
   finally{state.refreshBusy=false;}
 }
-async function setPage(page){state.page=page;state.viewToken++;$('app-shell').classList.remove('open');
-  $('main-view').innerHTML='<div class="panel empty" role="status">Loading '+escapeHtml(page==='logs'?'job logs':page)+'…</div>';
-  while(state.refreshBusy)await new Promise(r=>setTimeout(r,50));await load();}
+function workspaceViewKey(){return JSON.stringify([state.page,state.jobPage,state.search,state.filter,state.dashboardPage,state.dashboardFilter,state.outboxSearch,state.logPage,state.logsSearch,state.logsBatch,state.logsJobId,state.logsStart,state.logsEnd,state.logsEvent]);}
+async function setPage(page){state.readController?.abort();state.page=page;state.viewToken++;$('app-shell').classList.remove('open');
+  const cached=workspaceViews.get(workspaceViewKey());
+  if(cached){Object.assign(state,{data:cached.data,dashboard:cached.dashboard,logs:cached.logs,emailControls:cached.emailControls});if(['jobs','overview'].includes(page)&&!cached.data.jobs.some(j=>j.id===state.selected))state.selected=cached.selected;render();}
+  else $('main-view').innerHTML='<div class="panel empty" role="status">Loading '+escapeHtml(page==='logs'?'job logs':page)+'…</div>';
+  while(state.refreshBusy)await new Promise(r=>setTimeout(r,50));
+  await load({navigation:true});}
 
 function metricCards(){const t=state.data.totals||{};return [['Imported jobs',t.jobs],['Jobs approved',t.approved],['Outreach in pipeline',t.pipeline],['Replies received',t.replied]].map(([label,n])=>`<div class="metric"><div class="metric-top">${label}</div><div class="metric-number">${n||0}</div></div>`).join('');}
 function jobPanel(){const d=state.data,meta=d.jobs_page;return `<section class="panel"><div class="panel-head"><div><h2>Imported jobs</h2><small>Excel workflow · newest uploads first</small></div><button class="link-button" data-action="show-progress">Last upload progress</button></div><div class="filters">${[['all','All'],['new','New'],['approved','Approved'],['replies','Replies']].map(([k,t])=>`<button class="filter ${state.filter===k?'active':''}" data-filter="${k}">${t}</button>`).join('')}<input class="search-field" id="job-search" value="${escapeHtml(state.search)}" placeholder="Search roles" aria-label="Search roles"></div><div class="job-list">${d.jobs.map(jobCard).join('')||'<div class="empty">No matching imported jobs.</div>'}</div>${pager(meta.page,meta.total,meta.page_size,'jobs')}</section>`;}

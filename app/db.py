@@ -138,10 +138,14 @@ def log(db, action: str, job_id: str = '', outreach_id: str = '', **details):
     db.add(Event(action=action, job_id=job_id, outreach_id=outreach_id, details=json.dumps(details, default=str)))
 
 def get_kv(db, key: str, default=''):
+    cached = db.info.get('read_kv', {})
+    if key in cached:
+        return cached[key] if cached[key] is not None else default
     entry = db.get(KV, key)
     return entry.value if entry else default
 
 def set_kv(db, key: str, val: str):
+    db.info.get('read_kv', {}).pop(key, None)
     entry = db.get(KV, key)
     if entry:
         entry.value = val

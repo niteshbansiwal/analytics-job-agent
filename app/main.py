@@ -31,6 +31,15 @@ app = FastAPI(title='Analytics Job Agent', version='0.1.0', docs_url=None, redoc
 if (ROOT / 'public').is_dir():
     app.mount('/assets', StaticFiles(directory=str(ROOT / 'public')), name='assets')
 
+@app.middleware('http')
+async def read_timing(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    if request.method == 'GET' and request.url.path.startswith('/api/'):
+        response.headers['Server-Timing'] = f'app;dur={(time.perf_counter()-started)*1000:.1f}'
+    return response
+
+
 def is_https():
     return env('APP_BASE_URL').startswith('https://')
 
@@ -71,7 +80,7 @@ def owner(request: Request):
 
 def json_job(job: Job, db: Session, contacts=None, outreach=None, rr_states=None):
     if contacts is None: contacts = db.execute(select(Contact).where(Contact.job_id == job.id)).scalars().all()
-    if outreach is None: outreach = db.execute(select(Outreach).where(Outreach.job_id == job.id).order_by(Outreach.created_at.desc())).scalars().first()
+    if outreach is None: outreach = db.execute(select(Outreach).options(defer(Outreach.resume_b64)).where(Outreach.job_id == job.id).order_by(Outreach.created_at.desc()).limit(1)).scalars().first()
     rr_states = rr_states or {}
     return {
       'id': job.id, 'company': job.company, 'title': job.title, 'location': job.location,
@@ -229,7 +238,11 @@ def overview(user: str = Depends(owner), section: str = '', page: int = 1, searc
         from .read_model import totals, revision
         from collections import defaultdict
         from .db import KV
+        overview_keys = ['atlas_auto_import_enabled', 'scheduler_interval_minutes', 'scheduler_last_result', 'scheduler_last_tick', 'scheduler_reply_last_result', 'scheduler_reply_last_run', 'scheduler_reply_last_success', 'scheduler_send_last_result', 'scheduler_send_last_run', 'scheduler_send_last_success', 'email_holidays']
+        cached = dict(db.execute(select(KV.key,KV.value).where(KV.key.in_(overview_keys))).all())
+        db.info['read_kv'] = {key:cached.get(key) for key in overview_keys}
         compact = bool(section)
+        needs_jobs = not compact or section in ('jobs','overview')
         page = max(1, page)
         job_query = select(Job).where(Job.status != 'archived')
         if search:
@@ -237,7 +250,7 @@ def overview(user: str = Depends(owner), section: str = '', page: int = 1, searc
             job_query = job_query.where((Job.company + ' ' + Job.title + ' ' + Job.location).ilike(pattern, escape='\\'))
         job_status = {'new': 'discovered', 'approved': 'approved', 'replies': 'reply_received'}.get(status)
         if job_status: job_query = job_query.where(Job.status == job_status)
-        total = db.scalar(select(func.count()).select_from(job_query.subquery())) or 0
+        total = (db.scalar(select(func.count()).select_from(job_query.subquery())) or 0) if needs_jobs else 0
         page = min(page, max(1, (total + 19)//20))
         if compact:
             jobs = db.execute(job_query.order_by(Job.created_at.desc(), Job.id.desc()).offset((page-1)*20).limit(20)).scalars().all() if section in ('overview', 'jobs') else []
