@@ -141,6 +141,11 @@ def get_kv(db, key: str, default=''):
     cached = db.info.get('read_kv', {})
     if key in cached:
         return cached[key] if cached[key] is not None else default
+    # SQLAlchemy autoflush=False: set_kv may have just added a KV within this
+    # transaction. Read the pending value rather than missing the new setting.
+    for pending in db.new:
+        if isinstance(pending, KV) and pending.key == key:
+            return pending.value
     entry = db.get(KV, key)
     return entry.value if entry else default
 

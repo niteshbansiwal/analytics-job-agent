@@ -43,7 +43,7 @@ def test_log_first_milestones_missing_history_and_batch_filter():
         for i, action in enumerate(['job_uploaded', 'contact_email_available', 'reviewed_gmail_draft_verified', 'email_sent', 'email_sent', 'reply_received']):
             db.add(Event(job_id=job.id, action=action, created_at=at + timedelta(minutes=i)))
         # A profile-only update must not claim successful email enrichment.
-        db.add(Event(job_id=missing.id, action='spreadsheet_contact_enriched'))
+        db.add(Event(job_id=missing.id, action='spreadsheet_contact_enriched', created_at=at + timedelta(minutes=7)))
         db.add(KV(key='import_batch:test', value=json.dumps({'job_ids':[job.id]})))
         db.flush()
         result = job_logs(db, batch='test')['items']

@@ -131,9 +131,12 @@ def gemini_text_with_fallback(prompt: str, *, json_output: bool = False) -> tupl
                     f'Gemini primary ({primary}: {primary_error}) and fallback '
                     f'({fallback}: {fallback_error}) temporarily unavailable',
                     retryable=True) from fallback_error
+            # An inaccessible fallback must not permanently abandon the
+            # otherwise retryable primary model. Keep the outage recoverable.
             raise GeminiError(
-                f'Gemini fallback {fallback} failed with non-transient error: {fallback_error}'
-            ) from fallback_error
+                f'Gemini primary ({primary}) temporarily unavailable; '
+                f'fallback {fallback} unavailable: {fallback_error}',
+                retryable=True) from fallback_error
 
 
 def test_gemini_connection() -> dict:
