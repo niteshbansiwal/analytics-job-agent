@@ -228,6 +228,9 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     recover_rejected_linkedin_contacts(db, contact_ids=contact_ids)
     recover_rejected_email_links(db, contact_ids=contact_ids)
     recovered_gemini = _recover_transient_gemini_errors(db, contact_ids=contact_ids)
+    # With autoflush=False, persist newly queued retries and their cooldowns
+    # before the SQL join checks eligibility in this same transaction.
+    db.flush()
     # Never retry already drafted/sent work. Skip a new 503/timeout until the
     # following scheduler tick, without blocking other pending contacts.
     retry_at = aliased(KV)

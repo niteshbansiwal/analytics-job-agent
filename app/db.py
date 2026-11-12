@@ -151,6 +151,10 @@ def get_kv(db, key: str, default=''):
 
 def set_kv(db, key: str, val: str):
     db.info.get('read_kv', {}).pop(key, None)
+    for pending in db.new:
+        if isinstance(pending, KV) and pending.key == key:
+            pending.value = val
+            return
     entry = db.get(KV, key)
     if entry:
         entry.value = val
