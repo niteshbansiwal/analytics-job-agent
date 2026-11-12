@@ -237,7 +237,7 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     if exclude_ids:
         query = query.where(Outreach.id.not_in(exclude_ids))
     rows = db.execute(query.order_by(Outreach.created_at, Outreach.id)
-                      .limit(limit).with_for_update(skip_locked=True)).scalars().all()
+                      .limit(limit).with_for_update(of=Outreach, skip_locked=True)).scalars().all()
     scheduled = 0
     gemini_retries_queued = 0
     for row in rows:
