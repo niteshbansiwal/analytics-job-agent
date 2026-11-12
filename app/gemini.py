@@ -35,6 +35,7 @@ class GeminiError(RuntimeError):
 
 
 EMAIL_MODEL = 'gemini-3.5-flash-lite'
+FALLBACK_EMAIL_MODEL = 'gemini-3.8-flash'
 DEFAULT_EMAIL_PROMPT = (
     'Write a sharp, personalized outreach email in approximately 100–160 words. '
     'Lead with the specific business problem or analytical responsibility in the JD, '
@@ -107,6 +108,32 @@ def gemini_text(prompt: str, *, json_output: bool = False,
                           retryable=True) from exc
     except (ValueError, IndexError, KeyError, TypeError) as exc:
         raise GeminiError('Unexpected Gemini response format') from exc
+
+
+def gemini_text_with_fallback(prompt: str, *, json_output: bool = False) -> tuple[str, str]:
+    """Fallback only for transient model outages, keeping validation unchanged."""
+    primary = gemini_model()
+    try:
+        return gemini_text(prompt, json_output=json_output, model=primary), primary
+    except GeminiError as primary_error:
+        if not primary_error.retryable:
+            raise
+        fallback = env('GEMINI_FALLBACK_MODEL', FALLBACK_EMAIL_MODEL).strip()
+        if not fallback or fallback.lower() in ('none', 'disabled', 'off') or fallback == primary:
+            raise
+        if not re.fullmatch(r'[a-zA-Z0-9._-]{3,90}', fallback):
+            raise GeminiError('Invalid GEMINI_FALLBACK_MODEL configuration') from primary_error
+        try:
+            return gemini_text(prompt, json_output=json_output, model=fallback), fallback
+        except GeminiError as fallback_error:
+            if fallback_error.retryable:
+                raise GeminiError(
+                    f'Gemini primary ({primary}: {primary_error}) and fallback '
+                    f'({fallback}: {fallback_error}) temporarily unavailable',
+                    retryable=True) from fallback_error
+            raise GeminiError(
+                f'Gemini fallback {fallback} failed with non-transient error: {fallback_error}'
+            ) from fallback_error
 
 
 def test_gemini_connection() -> dict:
@@ -268,7 +295,7 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
     for attempt in range(config['max_repairs']+1):
         # Transport/quota errors are not hidden behind retries; only malformed
         # model output is repaired, with at most three total model calls.
-        raw = gemini_text(prompt, json_output=True)
+        raw, model_used = gemini_text_with_fallback(prompt, json_output=True)
         try:
             parsed = json.loads(raw)
             if not isinstance(parsed,dict) or set(parsed) != {'value_proposition','fact_ids'}:
@@ -290,7 +317,7 @@ def build_email_preview(company: str, title: str, jd: str, contact_name: str = '
             if unsupported:
                 raise EmailValidationError('Keep numerical claims in the exact selected achievement text, not the value paragraph: '+', '.join(sorted(unsupported)))
             subject,body,index = compose(config,company,title,contact_name,source_url,value,ids,CAREER_FACTS)
-            return {'model':gemini_model(),'primary_model':gemini_model(),'mode':'controlled_email',
+            return {'model':model_used,'primary_model':gemini_model(),'mode':'controlled_email',
                 'warning':'','subject':subject,'body':body,'selected_fact_ids':ids,
                 'prompt_source':'custom' if custom_prompt.strip() else 'default',
                 'prompt_characters':len(owner_prompt),'prompt_fingerprint':fingerprint,

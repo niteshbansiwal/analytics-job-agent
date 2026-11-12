@@ -5,7 +5,7 @@ from app.db import session, Job, Contact, Outreach, Integration, get_kv, set_kv,
 from app.gemini import GeminiError
 
 
-def test_transient_error_retries_on_next_trigger_and_stops_after_three(monkeypatch):
+def test_transient_error_retries_on_later_ticks_even_after_three(monkeypatch):
     monkeypatch.setenv('DEMO_MODE', 'false')
     monkeypatch.setattr(auto_pipeline, 'send_telegram', lambda *a, **k: None)
     monkeypatch.setattr(auto_pipeline, 'get_resume',
@@ -27,7 +27,7 @@ def test_transient_error_retries_on_next_trigger_and_stops_after_three(monkeypat
         db.flush()
         set_kv(db, auto_pipeline.KEY, 'true')
         oid = outreach.id
-    for attempt in (1, 2, 3):
+    for attempt in (1, 2, 3, 4):
         with session() as db:
             if attempt > 1:
                 set_kv(db, auto_pipeline.GEMINI_RETRY_AFTER_PREFIX + oid,
@@ -36,18 +36,18 @@ def test_transient_error_retries_on_next_trigger_and_stops_after_three(monkeypat
             row = db.get(Outreach, oid)
             assert result['processed'] == 1
             assert get_kv(db, auto_pipeline.GEMINI_RETRY_PREFIX + oid) == str(attempt)
-            assert row.status == ('pending_contact' if attempt < 3 else 'needs_attention')
+            assert row.status == 'pending_contact'
             assert row.gmail_draft_id == '' and row.sent_at is None
-            if attempt < 3:
-                assert 'next scheduler trigger' in row.error
-            else:
-                assert 'max 3 attempts' in row.error
-        if attempt == 1:
-            with session() as db:
-                assert auto_pipeline.process_pending(db, limit=1)['processed'] == 0
-    assert len(calls) == 3
-    with session() as db:
-        assert auto_pipeline.process_pending(db, limit=1)['processed'] == 0
+            assert 'Temporary AI failure — retry pending' in row.error
+            from datetime import datetime
+            retry_at = datetime.fromisoformat(get_kv(
+                db, auto_pipeline.GEMINI_RETRY_AFTER_PREFIX + oid))
+            minimum = (auto_pipeline.GEMINI_RECOVERY_COOLDOWN_SECONDS
+                       if attempt >= 3 else auto_pipeline.GEMINI_RETRY_BASE_SECONDS)
+            assert (retry_at - now()).total_seconds() >= minimum - 5
+        with session() as db:
+            assert auto_pipeline.process_pending(db, limit=1)['processed'] == 0
+    assert len(calls) == 4
 
 
 def test_existing_503_error_is_recovered_but_gmail_draft_is_not(monkeypatch):
@@ -64,9 +64,17 @@ def test_existing_503_error_is_recovered_but_gmail_draft_is_not(monkeypatch):
         failed=Outreach(job_id=job.id, contact_id=c1.id, status='needs_attention', error=error)
         drafted=Outreach(job_id=job.id, contact_id=c2.id, status='needs_attention',
                          error=error, gmail_draft_id='existing-gmail-draft')
-        db.add_all([failed,drafted]); db.flush()
+        c3 = Contact(job_id=job.id, name='Sangram Jena', email='sangram@example.com')
+        db.add(c3); db.flush()
+        exhausted = Outreach(job_id=job.id, contact_id=c3.id, status='needs_attention',
+                             error=error + ' (max 3 attempts reached; review required)')
+        db.add_all([failed,drafted,exhausted]); db.flush()
+        set_kv(db, auto_pipeline.GEMINI_RETRY_PREFIX + exhausted.id, '3')
         recovered=auto_pipeline._recover_transient_gemini_errors(db)
-        assert recovered == 1
+        assert recovered == 2
         assert failed.status == 'pending_contact'
+        assert exhausted.status == 'pending_contact'
         assert drafted.status == 'needs_attention'
         assert get_kv(db, auto_pipeline.GEMINI_RETRY_PREFIX + failed.id) == '1'
+        assert get_kv(db, auto_pipeline.GEMINI_RETRY_PREFIX + exhausted.id) == '0'
+        assert get_kv(db, auto_pipeline.GEMINI_RETRY_AFTER_PREFIX + exhausted.id)

@@ -21,9 +21,11 @@ KEY = 'atlas_auto_import_enabled'
 GEMINI_MAX_ATTEMPTS = 3
 GEMINI_RETRY_PREFIX = 'auto_gemini_attempts:'
 GEMINI_RETRY_AFTER_PREFIX = 'auto_gemini_retry_after:'
-# A short defer prevents immediate upload workers from retrying in a tight loop;
-# the existing 15-minute Vercel scheduler will pick the task up on its next tick.
-GEMINI_RETRY_DEFER_SECONDS = 90
+# Persisted exponential retry delay; after three failures retry hourly.
+# This does not block other contacts while a model provider is unavailable.
+GEMINI_RETRY_BASE_SECONDS = 120
+GEMINI_RETRY_MAX_SECONDS = 3600
+GEMINI_RECOVERY_COOLDOWN_SECONDS = 3600
 TRANSIENT_LEGACY_GEMINI_ERRORS = (
     'Gemini service temporarily unavailable (HTTP 500)',
     'Gemini service temporarily unavailable (HTTP 502)',
@@ -102,42 +104,48 @@ def _recover_transient_gemini_errors(db, *, contact_ids=None):
             attempts = int(get_kv(db, key, '1') or '1')
         except (ValueError, TypeError):
             attempts = 1
+        # Repair the old permanent three-attempt stop, without touching Gmail drafts.
         if attempts >= GEMINI_MAX_ATTEMPTS:
-            continue
+            attempts = 0
         set_kv(db, key, str(attempts))
+        ready_at = now() + timedelta(seconds=GEMINI_RETRY_BASE_SECONDS)
+        set_kv(db, GEMINI_RETRY_AFTER_PREFIX + row.id, ready_at.isoformat())
         row.status = 'pending_contact'
-        row.error = (f'Gemini transient failure; attempt {attempts}/{GEMINI_MAX_ATTEMPTS}. '
-                     'Retry queued for scheduler.')
+        row.error = ('Temporary AI failure — retry pending. Recovered a previous '
+                     'Gemini outage; next eligible on a later scheduler run.')
         recovered += 1
         log(db, 'auto_gemini_legacy_retry_requeued', row.job_id, row.id,
-            attempt=attempts, max_attempts=GEMINI_MAX_ATTEMPTS)
+            attempt=attempts, next_eligible_at=ready_at)
     return recovered
 
 
 def _handle_gemini_error(db, row, exc):
-    """Persist a bounded transient retry; fail closed after three failed calls."""
+    """Back off transient Gemini outages without silently abandoning authorized work."""
     key = GEMINI_RETRY_PREFIX + row.id
-    try:
-        attempts = int(get_kv(db, key, '0') or '0') + 1
-    except (ValueError, TypeError):
-        attempts = 1
-    set_kv(db, key, str(attempts))
-    if (exc.retryable and attempts < GEMINI_MAX_ATTEMPTS
-            and not row.gmail_draft_id and not row.sent_at):
-        ready_at = now() + timedelta(seconds=GEMINI_RETRY_DEFER_SECONDS)
+    if (exc.retryable and not row.gmail_draft_id and not row.sent_at
+            and row.due_at is None):
+        try:
+            attempts = max(0, int(get_kv(db, key, '0') or '0')) + 1
+        except (ValueError, TypeError):
+            attempts = 1
+        set_kv(db, key, str(attempts))
+        delay = min(GEMINI_RETRY_MAX_SECONDS,
+                    GEMINI_RETRY_BASE_SECONDS * (2 ** min(attempts - 1, 8)))
+        if attempts >= GEMINI_MAX_ATTEMPTS:
+            delay = max(delay, GEMINI_RECOVERY_COOLDOWN_SECONDS)
+        ready_at = now() + timedelta(seconds=delay)
         set_kv(db, GEMINI_RETRY_AFTER_PREFIX + row.id, ready_at.isoformat())
         row.status = 'pending_contact'
-        row.error = (f'Gemini temporarily unavailable: {exc}. '
-                     f'Attempt {attempts}/{GEMINI_MAX_ATTEMPTS}; '
-                     'retry on the next scheduler trigger.')
+        row.error = (f'Temporary AI failure — retry pending: {exc}. '
+                     f'Attempt {attempts}; next eligible after '
+                     f'{ready_at.isoformat()} (scheduler time).')
         log(db, 'auto_gemini_retry_queued', row.job_id, row.id,
             contact_id=row.contact_id, attempt=attempts,
-            max_attempts=GEMINI_MAX_ATTEMPTS, next_eligible_at=ready_at,
-            reason=str(exc)[:170])
+            fast_retry_limit=GEMINI_MAX_ATTEMPTS, backoff_seconds=delay,
+            next_eligible_at=ready_at, reason=str(exc)[:170])
         return True
-    _failure(db, row, 'Draft/schedule error: GeminiError: ' + str(exc)[:190] +
-             (f' (max {GEMINI_MAX_ATTEMPTS} attempts reached; review required)'
-              if exc.retryable else ' (non-retryable)'))
+    _failure(db, row, 'Draft/schedule error: GeminiError: ' +
+             str(exc)[:190] + ' (non-retryable or draft already exists)')
     return False
 
 
@@ -401,7 +409,8 @@ def process_pending(db, limit=4, *, contact_ids=None, exclude_ids=None):
     return {'processed': len(rows), 'scheduled': scheduled,
             'gemini_retries_queued': gemini_retries_queued,
             'legacy_gemini_recovered': recovered_gemini,
-            'gemini_max_attempts': GEMINI_MAX_ATTEMPTS,
+            'gemini_fast_retry_limit': GEMINI_MAX_ATTEMPTS,
+            'gemini_recovery_cooldown_seconds': GEMINI_RECOVERY_COOLDOWN_SECONDS,
             'outreach_ids': [row.id for row in rows]}
 
 

@@ -123,3 +123,57 @@ def test_gemini_invalid_configuration_is_not_retryable(monkeypatch):
     with pytest.raises(gemini.GeminiError) as exc:
         gemini.gemini_text('Test', json_output=True)
     assert exc.value.retryable is False
+
+
+
+def test_transient_primary_uses_supported_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gemini, 'env',
+        lambda name, default='': {
+            'GEMINI_MODEL':'gemini-3.5-flash-lite',
+            'GEMINI_FALLBACK_MODEL':'gemini-3.8-flash',
+        }.get(name, default))
+    def fake(prompt, *, json_output=False, model=None):
+        calls.append(model)
+        if model == 'gemini-3.5-flash-lite':
+            raise gemini.GeminiError('HTTP 503', retryable=True)
+        return '{"fact_ids":["dashboards","amex_sme"]}'
+    monkeypatch.setattr(gemini, 'gemini_text', fake)
+    body, used = gemini.gemini_text_with_fallback('Select facts', json_output=True)
+    assert used == 'gemini-3.8-flash'
+    assert gemini._validated_ids(body) == ['dashboards', 'amex_sme']
+    assert calls == ['gemini-3.5-flash-lite', 'gemini-3.8-flash']
+
+
+def test_both_gemini_models_down_stays_retryable(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gemini, 'env',
+        lambda name, default='': {
+            'GEMINI_MODEL':'gemini-3.5-flash-lite',
+            'GEMINI_FALLBACK_MODEL':'gemini-3.8-flash',
+        }.get(name, default))
+    def offline(prompt, *, json_output=False, model=None):
+        calls.append(model)
+        raise gemini.GeminiError('Gemini HTTP 503', retryable=True)
+    monkeypatch.setattr(gemini, 'gemini_text', offline)
+    with pytest.raises(gemini.GeminiError) as exc:
+        gemini.gemini_text_with_fallback('Select facts', json_output=True)
+    assert exc.value.retryable is True
+    assert calls == ['gemini-3.5-flash-lite', 'gemini-3.8-flash']
+
+
+def test_nontransient_primary_does_not_call_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gemini, 'env',
+        lambda name, default='': {
+            'GEMINI_MODEL':'gemini-3.5-flash-lite',
+            'GEMINI_FALLBACK_MODEL':'gemini-3.8-flash',
+        }.get(name, default))
+    def denied(prompt, *, json_output=False, model=None):
+        calls.append(model)
+        raise gemini.GeminiError('Invalid Gemini request (HTTP 400)')
+    monkeypatch.setattr(gemini, 'gemini_text', denied)
+    with pytest.raises(gemini.GeminiError) as exc:
+        gemini.gemini_text_with_fallback('Select facts', json_output=True)
+    assert exc.value.retryable is False
+    assert calls == ['gemini-3.5-flash-lite']
