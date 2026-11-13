@@ -1,7 +1,7 @@
 from __future__ import annotations
 import base64
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session
 from .config import settings, demo_mode, env
@@ -217,9 +217,40 @@ def _create_followup_draft(db: Session, row: Outreach):
     row.gmail_draft_id = draft['id']
     row.subject, row.body = subject, body
     from .scheduling import holidays
-    row.due_at = followup_due(row.sent_at, extra_holidays=set(holidays(db)))
+    due = followup_due(row.sent_at, extra_holidays=set(holidays(db)))
+    if aware(due) <= now():
+        # Overdue (e.g. an older email scheduled late): use the next fixed slot, never "right now".
+        due = next_fixed_send(now() + timedelta(minutes=1))
+    row.due_at = due
     row.status = 'followup_scheduled'
     log(db, 'followup_draft_created', row.job_id, row.id, due_at=row.due_at, attempt=row.followup_count + 1)
+
+
+def schedule_missing_followups(db: Session, *, limit: int = 25) -> dict:
+    """Queue the next follow-up for sent emails that have none (e.g. sent while
+    follow-ups were disabled). Run only after a successful reply check.
+
+    Rows that replied, reached the attempt limit, or previously failed to draft
+    (error set) are skipped, so this is safe to run on every scheduler tick."""
+    cfg = settings()['email']['followup']
+    if demo_mode() or not cfg['enabled'] or not db.get(Integration, 'gmail'):
+        return {'scheduled': 0, 'skipped': 'disabled'}
+    rows = db.execute(select(Outreach).where(
+        Outreach.status == 'awaiting_reply', Outreach.followup_count < int(cfg['max_attempts']),
+        Outreach.sent_message_id != '', Outreach.gmail_thread_id != '', Outreach.sent_at.is_not(None),
+        Outreach.last_reply_at.is_(None), Outreach.gmail_draft_id == '', Outreach.error == '')
+        .order_by(Outreach.sent_at).limit(limit)).scalars().all()
+    scheduled, failed = 0, 0
+    for row in rows:
+        try:
+            _create_followup_draft(db, row)
+            log(db, 'followup_backfilled', row.job_id, row.id, due_at=row.due_at)
+            scheduled += 1
+        except Exception as exc:
+            row.error = f'Follow-up draft failed: {exc}'[:300]
+            failed += 1
+        db.commit()
+    return {'scheduled': scheduled, 'failed': failed}
 
 
 def send_due(db: Session, *, clock: datetime | None = None) -> dict:

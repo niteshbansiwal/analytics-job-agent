@@ -1406,6 +1406,10 @@ def cron_tick(request: Request):
             results['replies'] = monitor_replies(db)
             set_kv(db, 'scheduler_reply_last_result', json.dumps(results['replies'], default=str)[:800])
             set_kv(db, 'scheduler_reply_last_success', now().isoformat())
+            db.commit()
+            # Only after replies are checked, so nobody who answered gets a follow-up.
+            from .workflow import schedule_missing_followups
+            results['followups'] = schedule_missing_followups(db)
         except Exception as exc:
             db.rollback()
             results['replies'] = {'error': type(exc).__name__ + ': ' + str(exc)[:200]}
