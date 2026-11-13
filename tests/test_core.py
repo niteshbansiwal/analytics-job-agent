@@ -55,7 +55,10 @@ def test_calendar_weekends_and_48hr_rule():
     assert mon.strftime('%Y-%m-%d %H:%M') == '2026-11-09 10:30'
     # Thu 10:30 IST +48h => Saturday, reschedule to Monday 10:30 IST
     thurs = datetime(2026, 11, 5, 10, 30, tzinfo=IST)
-    due = followup_due(thurs).astimezone(IST)
+    from app.config import settings
+    import copy
+    elapsed = copy.deepcopy(settings()); elapsed['email']['followup'].update(delay_type='elapsed', hours=48)
+    due = followup_due(thurs, elapsed).astimezone(IST)
     assert due.strftime('%Y-%m-%d %H:%M') == '2026-11-09 10:30'
     assert daily_search_due(datetime(2026, 11, 9, 3, 31, tzinfo=UTC), '')
     assert not daily_search_due(datetime(2026, 11, 8, 4, 0, tzinfo=UTC), '')

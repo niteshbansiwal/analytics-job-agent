@@ -32,10 +32,11 @@ email:
   max_sends_per_day: 8
   enforce_contact_email: true
   followup:
-    enabled: false               # Opt in after dry run; independent from initial sending
-    hours: 48
-    delay_type: elapsed          # elapsed or business
-    max_attempts: 2
+    enabled: true                # Independent from initial sending; stops on any reply
+    delay_type: working_days     # working_days, elapsed or business
+    days: 3                      # Each follow-up goes on the 3rd working day after the previous email
+    hours: 48                    # Used only by elapsed/business delay types
+    max_attempts: 3
     stop_on_any_reply: true
     never_followup_after_rejection: true
 rocketreach:

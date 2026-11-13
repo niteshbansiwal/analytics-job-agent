@@ -64,9 +64,33 @@ def plus_business_hours(start_utc: datetime, hours: int, cfg: dict | None = None
         spot = next_working_moment(close + timedelta(seconds=1), cfg)
     raise RuntimeError('Business-hours calculation exceeded limit')
 
-def followup_due(sent_at: datetime, cfg: dict | None = None) -> datetime:
+def nth_working_day_after(sent_at: datetime, n: int, cfg: dict | None = None,
+                          extra_holidays: set[str] | frozenset[str] = frozenset()) -> datetime:
+    """Return the fixed send slot on the n-th working day after the local send date.
+
+    The send date itself never counts: a Monday email's 3rd working day is Thursday.
+    Weekends, configured holidays and any extra (owner-managed) holidays are skipped."""
+    cfg = cfg or settings()
+    if n < 1:
+        raise ValueError('n must be at least 1')
+    tz = ZoneInfo(cfg['timezone'])
+    day = aware(sent_at).astimezone(tz).date()
+    send_time = parse_clock(cfg['email']['preferred_send_time'])
+    counted = 0
+    for _ in range(370):
+        day += timedelta(days=1)
+        if is_workday(day, cfg) and day.isoformat() not in extra_holidays:
+            counted += 1
+            if counted == n:
+                return datetime.combine(day, send_time, tz).astimezone(UTC)
+    raise RuntimeError('Unable to locate an eligible follow-up day')
+
+def followup_due(sent_at: datetime, cfg: dict | None = None,
+                 extra_holidays: set[str] | frozenset[str] = frozenset()) -> datetime:
     cfg = cfg or settings()
     rule = cfg['email']['followup']
+    if rule.get('delay_type') == 'working_days':
+        return nth_working_day_after(sent_at, int(rule['days']), cfg, extra_holidays)
     delay = int(rule['hours'])
     base = (plus_business_hours(sent_at, delay, cfg) if rule['delay_type'] == 'business'
             else aware(sent_at) + timedelta(hours=delay))

@@ -216,7 +216,8 @@ def _create_followup_draft(db: Session, row: Outreach):
     draft = gmail_create_draft(db, row.to_email, subject, body, b'', '', row.gmail_thread_id, rfc_id)
     row.gmail_draft_id = draft['id']
     row.subject, row.body = subject, body
-    row.due_at = followup_due(row.sent_at)
+    from .scheduling import holidays
+    row.due_at = followup_due(row.sent_at, extra_holidays=set(holidays(db)))
     row.status = 'followup_scheduled'
     log(db, 'followup_draft_created', row.job_id, row.id, due_at=row.due_at, attempt=row.followup_count + 1)
 
