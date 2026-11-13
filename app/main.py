@@ -40,6 +40,9 @@ async def read_timing(request: Request, call_next):
     return response
 
 
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
 def is_https():
     return env('APP_BASE_URL').startswith('https://')
 
@@ -314,6 +317,9 @@ def overview(user: str = Depends(owner), section: str = '', page: int = 1, searc
                 'holidays': holidays(db),
                 'followup_enabled': cfg['email']['followup']['enabled'],
                 'followup_hours': cfg['email']['followup']['hours'],
+                'followup_rule': (f"{_ordinal(int(cfg['email']['followup']['days']))} working day after the previous email"
+                                  if cfg['email']['followup'].get('delay_type') == 'working_days'
+                                  else f"{cfg['email']['followup']['hours']} elapsed hours"),
                 'max_followups': cfg['email']['followup']['max_attempts'],
             },
         }

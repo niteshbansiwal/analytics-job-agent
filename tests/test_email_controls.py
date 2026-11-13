@@ -208,8 +208,15 @@ def test_valid_controlled_draft_still_sends_through_scheduler(monkeypatch):
             gmail_draft_id='draft',due_at=at-timedelta(minutes=1),resume_b64=base64.b64encode(attachment).decode())
         db.add(row);db.commit()
         result=workflow.send_due(db,clock=at)
-        assert result['sent']==1 and sent==[1]
+        assert result['sent']==1 and sent[0]==1
         assert row.sent_message_id=='sent-id'
+        # Follow-ups enabled: the sent email immediately queues follow-up #1 as a
+        # threaded Gmail draft on the 3rd working day (Wed 11 Nov -> Mon 16 Nov, 10:30 IST).
+        from zoneinfo import ZoneInfo
+        assert row.status=='followup_scheduled' and row.error==''
+        assert row.subject.startswith('Re: ')
+        due=workflow.aware(row.due_at).astimezone(ZoneInfo('Asia/Kolkata'))
+        assert due.strftime('%a %Y-%m-%d %H:%M')=='Mon 2026-11-16 10:30'
 
 
 def test_owner_v2_and_followup():
