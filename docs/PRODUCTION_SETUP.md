@@ -33,7 +33,7 @@ Google sign-in requests basic profile and email permissions only. Gmail access i
 
 ## 2. Persistent database
 
-Use Neon Postgres (or any managed PostgreSQL provider). The Neon ChatGPT plugin may help create and manage a database after you connect it; alternatively install Neon from Vercel Marketplace/Storage.
+Production uses Aiven for PostgreSQL (free plan, 20-connection limit; moved from Neon in Nov 2026 after Neon's free data-transfer cap was hit). Any managed PostgreSQL provider works. On Vercel the app uses `NullPool`, so each request opens and closes its own connection and idle instances hold none.
 
 - Connect a database to the Vercel project or copy the provider's **pooled PostgreSQL connection string** into `DATABASE_URL` as an encrypted Production variable.
 - Do not expose `DATABASE_URL` in browser JavaScript.
