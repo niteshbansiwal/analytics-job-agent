@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from sqlalchemy import create_engine, ForeignKey, String, Text, Integer, DateTime, Float, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.pool import NullPool
 from .config import ROOT, env, demo_mode
 
 def now() -> datetime:
@@ -115,7 +116,14 @@ def engine():
             url = 'postgresql+psycopg://' + url[len('postgresql://'):]
         if not demo_mode() and url.startswith('sqlite') and env('VERCEL'):
             raise RuntimeError('Production requires persistent PostgreSQL DATABASE_URL.')
-        kwargs = {'connect_args': {'check_same_thread': False}} if url.startswith('sqlite') else {'pool_pre_ping': True}
+        if url.startswith('sqlite'):
+            kwargs = {'connect_args': {'check_same_thread': False}}
+        elif env('VERCEL'):
+            # Serverless instances must not each hold idle connections. The
+            # shared Aiven free service allows only 20 connections in total.
+            kwargs = {'poolclass': NullPool, 'pool_pre_ping': True}
+        else:
+            kwargs = {'pool_pre_ping': True}
         _engine = create_engine(url, **kwargs)
         Base.metadata.create_all(_engine)
         _Session = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
