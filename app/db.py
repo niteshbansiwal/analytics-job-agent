@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from contextlib import contextmanager
@@ -105,10 +106,18 @@ class KV(Base):
 
 _engine = None
 _Session = None
+_init_lock = threading.Lock()
 
 def engine():
     global _engine, _Session
-    if _engine is None:
+    # FastAPI runs sync endpoints in a thread pool, so concurrent first requests
+    # on a cold instance can race here. Publish _engine only after create_all
+    # and _Session are ready; a failed setup leaves both unset and retries.
+    if _engine is not None and _Session is not None:
+        return _engine
+    with _init_lock:
+        if _engine is not None and _Session is not None:
+            return _engine
         url = env('DATABASE_URL') or f"sqlite:///{ROOT / 'data' / 'agent.db'}"
         if url.startswith('postgres://'):
             url = 'postgresql+psycopg://' + url[len('postgres://'):]
@@ -124,9 +133,15 @@ def engine():
             kwargs = {'poolclass': NullPool, 'pool_pre_ping': True}
         else:
             kwargs = {'pool_pre_ping': True}
-        _engine = create_engine(url, **kwargs)
-        Base.metadata.create_all(_engine)
-        _Session = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+        new_engine = create_engine(url, **kwargs)
+        try:
+            # Creates missing tables only; never drops or alters existing data.
+            Base.metadata.create_all(new_engine)
+        except Exception:
+            new_engine.dispose()
+            raise
+        _Session = sessionmaker(bind=new_engine, autoflush=False, expire_on_commit=False)
+        _engine = new_engine
     return _engine
 
 @contextmanager
